@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --canvas: oklch(0.974 0.005 150);
+  --surface: oklch(0.991 0.003 150);
+  --surface-raised: oklch(0.955 0.007 150);
+  --selected: oklch(0.981 0.009 30);
+  --ink: oklch(0.265 0.025 180);
+  --legal-ink: oklch(0.30 0.02 65);
+  --muted: oklch(0.47 0.018 180);
+  --placeholder: oklch(0.57 0.015 180);
+  --line: oklch(0.89 0.009 150);
+  --line-strong: oklch(0.80 0.013 150);
+  --accent: oklch(0.43 0.105 18);
+  --accent-hover: oklch(0.37 0.095 18);
+  --accent-soft: oklch(0.94 0.025 18);
+  --accent-soft-strong: oklch(0.78 0.055 18);
+  --on-accent: oklch(0.985 0.004 18);
+  --sidebar: oklch(0.245 0.027 180);
+  --sidebar-raised: oklch(0.285 0.027 180);
+  --sidebar-hover: oklch(0.32 0.03 180);
+  --sidebar-active: oklch(0.325 0.035 180);
+  --sidebar-text: oklch(0.94 0.009 150);
+  --sidebar-muted: oklch(0.75 0.016 170);
+  --sidebar-line: oklch(0.39 0.025 180);
+  --success: oklch(0.43 0.09 155);
+  --success-soft: oklch(0.94 0.025 155);
+  --warning: oklch(0.52 0.10 70);
+  --warning-soft: oklch(0.95 0.025 70);
+  --danger: oklch(0.47 0.14 25);
+  --danger-soft: oklch(0.95 0.025 25);
+  --disabled: oklch(0.83 0.008 150);
+  --user-bubble: oklch(0.925 0.015 180);
+  --watermark: oklch(0.93 0.015 18);
+  --focus-soft: oklch(0.90 0.025 18);
+  --backdrop: oklch(0.20 0.02 180 / 0.55);
+  --shadow: oklch(0.20 0.02 180 / 0.18);
+  --code: oklch(0.26 0.02 180);
+  --code-text: oklch(0.93 0.01 150);
+  --font-sans: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --font-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+  font-family: var(--font-sans);
+  color: var(--ink);
+  background: var(--canvas);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+html { min-width: 320px; background: var(--canvas); }
+body { min-width: 320px; min-height: 100dvh; margin: 0; background: var(--canvas); font-size: 16px; line-height: 1.6; }
+button, input, textarea { font-family: inherit; }
+button { -webkit-tap-highlight-color: transparent; }
+::selection { background: var(--accent-soft-strong); color: var(--ink); }
