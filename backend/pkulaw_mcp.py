@@ -323,10 +323,11 @@ def normalize_evidence(result: dict, question: str, match_type: str) -> list[dic
         if identity in seen:
             continue
         seen.add(identity)
+        article_key = hashlib.sha256(f"{source_id}|{label}|{text}".encode("utf-8")).hexdigest()[:16]
         evidence.append({
             "provider": "pkulaw",
             "document_id": source_id or f"pkulaw-{hashlib.sha256(title.encode('utf-8')).hexdigest()[:16]}",
-            "article_id": source_id or f"pkulaw-result-{index}",
+            "article_id": f"{source_id or 'pkulaw-result'}-{article_key}",
             "document_title": title,
             "article_label": label or "检索命中",
             "section_path": [],

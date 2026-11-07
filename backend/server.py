@@ -13,6 +13,8 @@ from legal_store import LegalStore
 from pkulaw_mcp import PkulawError, PkulawProvider, extract_law_title
 
 ROOT = Path(__file__).resolve().parent
+CRIMINAL_QUERY_RE = re.compile(r"判刑|量刑|偷盗|盗窃|强奸|犯罪|刑事责任|数罪并罚|有期徒刑|死刑|罚金|罪名|刑事拘留|缓刑")
+CIVIL_QUERY_RE = re.compile(r"民法|民事|侵权|合同|婚姻|离婚|继承|监护|收养")
 
 
 def load_project_env() -> None:
@@ -38,6 +40,45 @@ def numbered_evidence(evidence: list[dict]) -> list[dict]:
     return [{"citation_id": index, **item} for index, item in enumerate(evidence, start=1)]
 
 
+def criminal_core_queries(question: str) -> list[str]:
+    """Split supported sentencing issues into precise Criminal Law article lookups."""
+    queries = []
+    if re.search(r"未成年|不满十八|未满十八|不满18|未满18", question):
+        queries.extend(["《刑法》第十七条", "《刑法》第四十九条"])
+    offense_count = 0
+    if re.search(r"偷盗|盗窃", question):
+        queries.append("《刑法》第二百六十四条")
+        offense_count += 1
+    if "强奸" in question:
+        queries.append("《刑法》第二百三十六条")
+        offense_count += 1
+    if offense_count >= 2 or "数罪并罚" in question:
+        queries.append("《刑法》第六十九条")
+    return queries
+
+
+def retrieve_core_criminal_evidence(queries: list[str]) -> tuple[list[dict], dict]:
+    evidence = []
+    seen = set()
+    results = []
+    for query in queries:
+        result = PKULAW.search(query, strategy="fatiao")
+        results.append(result)
+        for item in result["evidence"]:
+            identity = (item["document_title"], item["article_label"])
+            if identity not in seen:
+                seen.add(identity)
+                evidence.append(item)
+    notices = [result["notice"] for result in results if result.get("notice")]
+    notices.insert(0, "已将复合量刑问题拆分为刑事责任年龄、具体罪名及数罪并罚的精准刑法检索。")
+    return evidence, {
+        "source": "pkulaw", "provider": "pkulaw", "strategy": "criminal_core_articles",
+        "tool": "get_law_article", "cached": all(result["cached"] for result in results),
+        "queried_at": max(result["queried_at"] for result in results),
+        "queries": queries, "notice": "；".join(notices),
+    }
+
+
 def retrieve_evidence(question: str, document_id: str | None = None, source: str = "auto") -> tuple[list[dict], dict]:
     if source not in {"auto", "local", "pkulaw"}:
         raise ValueError("不支持的数据源")
@@ -46,11 +87,15 @@ def retrieve_evidence(question: str, document_id: str | None = None, source: str
         document["title"] == explicit_title or document["title"].endswith(explicit_title)
         for document in STORE.documents
     )
-    evidence = STORE.search(question, document_id) if source in {"auto", "local"} and title_is_local else []
+    criminal_without_civil_context = bool(CRIMINAL_QUERY_RE.search(question)) and not bool(CIVIL_QUERY_RE.search(question))
+    evidence = STORE.search(question, document_id) if source in {"auto", "local"} and title_is_local and not criminal_without_civil_context else []
     if evidence or source == "local":
         return evidence, {"source": "local_official", "provider": "flk", "cached": True}
     if source == "auto" and not PKULAW.configured:
         return [], {"source": "none", "provider": None, "notice": "本地未命中；北大法宝 MCP 尚未配置"}
+    core_queries = criminal_core_queries(question) if criminal_without_civil_context else []
+    if core_queries:
+        return retrieve_core_criminal_evidence(core_queries)
     result = PKULAW.search(question)
     return result["evidence"], {
         "source": "pkulaw", "provider": "pkulaw", "strategy": result["strategy"],
@@ -78,10 +123,28 @@ def response_payload(question: str, evidence: list[dict]) -> dict:
     try:
         answer = DEEPSEEK.generate(question, evidence)
         verification = verify_answer(answer, evidence)
+        attempts = 1
         if not verification["passed"]:
+            failed_checks = [
+                f"{check['name']}：{check['detail']}"
+                for check in verification["checks"] if not check["passed"]
+            ]
+            uncovered = verification.pop("_uncovered_segments", [])
+            if uncovered:
+                failed_checks.append("以下段落必须补充证据编号或删除：\n" + "\n".join(uncovered))
+            answer = DEEPSEEK.generate(
+                question, evidence, correction_notes=failed_checks, previous_answer=answer,
+            )
+            verification = verify_answer(answer, evidence)
+            attempts = 2
+        verification.pop("_uncovered_segments", None)
+        verification["attempts"] = attempts
+        if not verification["passed"]:
+            failed_checks = [check for check in verification["checks"] if not check["passed"]]
+            reasons = "；".join(f"{check['name']}（{check['detail']}）" for check in failed_checks)
             return {
                 "status": "verification_failed",
-                "answer": "模型生成内容未通过独立引用校验，因此没有展示该回答。右侧仅保留已核验的官方原文；你可以重试，或改为更明确的条文任务。",
+                "answer": f"模型已自动重新生成一次，但回答仍未通过独立校验，因此未展示原始回答。未通过项目：{reasons}。右侧仅保留检索到的文献原文；请根据失败项调整问题后重试。",
                 "evidence": numbered,
                 "verification": verification,
             }

@@ -23,7 +23,8 @@ class DeepSeekClient:
     def configured(self) -> bool:
         return bool(self.api_key)
 
-    def generate(self, question: str, evidence: list[dict]) -> str:
+    def generate(self, question: str, evidence: list[dict], correction_notes: list[str] | None = None,
+                 previous_answer: str | None = None) -> str:
         if not self.configured:
             raise DeepSeekError("未配置 DEEPSEEK_API_KEY")
         evidence_text = "\n\n".join(
@@ -32,11 +33,20 @@ class DeepSeekClient:
             for index, item in enumerate(evidence, start=1)
         )
         system_prompt = """你是严谨的法律文献证据助手。你可以解释、比较、归纳、提取、改写和辅助起草，不局限于简单问答。
-只能使用用户提供的证据原文支撑法律陈述，不得使用记忆中的其他法律、案例或数字。
-每个包含法律陈述的段落末尾必须标注【证据N】，N只能来自给定证据。引用原文时使用中文引号，且必须逐字复制。
-明确区分原文内容与基于原文的分析；证据不足时直接说明，不得猜测。不要编造案例、司法解释或实务结论。
+只能使用用户提供的证据原文支撑法律陈述，不得使用记忆中的其他法律、案例或数字。必须逐项完整回答用户任务中的子问题，不得只分析部分证据或部分行为。
+每一个非空段落末尾都必须标注【证据N】，包括开头引言、分析、限制说明和结尾总结；不要输出没有证据编号的引言或总结。N只能来自给定证据，不能写成“证据3”等缺少括号的形式。
+引用原文时使用中文引号，且必须逐字复制。明确区分原文内容与基于原文的分析；证据不足时直接说明，不得猜测。不要编造案例、司法解释或实务结论。
 输出一个 JSON 对象，不要 Markdown 代码块，格式为 {"answer":"回答正文","unresolved":["仍未解决的问题"]}。"""
         user_prompt = f"用户任务：{question}\n\n以下是唯一可用的证据：\n{evidence_text}"
+        if correction_notes:
+            notes = "\n".join(f"- {note}" for note in correction_notes)
+            if previous_answer:
+                user_prompt += f"\n\n上一版完整草稿：\n{previous_answer}"
+            user_prompt += (
+                "\n\n上一版回答未通过独立校验，请在保留正确、已有证据内容的基础上定向修订，重新输出完整回答。"
+                "必须逐项修复以下问题，同时完整回答原任务的全部子问题，不得为缩短篇幅而遗漏任何罪名、责任条件或量刑规则。"
+                f"每个非空段落末尾都要使用有效的【证据N】格式：\n{notes}"
+            )
         payload = json.dumps({
             "model": self.model,
             "messages": [
@@ -114,4 +124,8 @@ def verify_answer(answer: str, evidence: list[dict]) -> dict:
     unknown_articles = sorted(used_articles - allowed_articles)
     add("未引入证据外条号", not unknown_articles, "回答中的条号均属于本次证据包" if not unknown_articles else "发现证据包之外的条号")
 
-    return {"passed": all(check["passed"] for check in checks), "checks": checks}
+    return {
+        "passed": all(check["passed"] for check in checks),
+        "checks": checks,
+        "_uncovered_segments": uncovered,
+    }

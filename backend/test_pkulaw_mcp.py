@@ -163,6 +163,14 @@ class PkulawMCPTest(unittest.TestCase):
         self.assertEqual(item["text"], "行为人因过错侵害他人民事权益造成损害的，应当承担侵权责任。")
         self.assertEqual(item["effect_level"], "民法")
 
+    def test_articles_from_same_law_have_unique_ids(self):
+        result = {"structuredContent": {"result": [
+            {"gid": "same-law-id", "title": "中华人民共和国刑法", "article_label": "第十七条", "content": "第一条文内容"},
+            {"gid": "same-law-id", "title": "中华人民共和国刑法", "article_label": "第四十九条", "content": "第二条文内容"},
+        ]}}
+        evidence = normalize_evidence(result, "刑法", "exact")
+        self.assertEqual(len({item["article_id"] for item in evidence}), 2)
+
     def test_keyword_empty_result_falls_back_to_semantic_once(self):
         class FallbackClient:
             configured = True
