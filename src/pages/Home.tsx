@@ -7,8 +7,8 @@ import { AnswerText } from '@/components/AnswerText'
 import { EvidencePanel } from '@/components/EvidencePanel'
 import { LibraryView } from '@/components/LibraryView'
 import { ModelDialog } from '@/components/ModelDialog'
-import { askLaw, getDocuments, getHealth } from '@/lib/api'
-import type { AnswerStatus, ChatMessage, Evidence, Health, LegalDocument } from '@/types/legal'
+import { askLaw, getDocuments, getHealth, getProviders } from '@/lib/api'
+import type { AnswerStatus, ChatMessage, Evidence, Health, LegalDocument, ProviderStatus } from '@/types/legal'
 import '../App.css'
 
 const examples = [
@@ -23,12 +23,14 @@ const statusLabels: Record<AnswerStatus, string> = {
   insufficient_evidence: '证据不足',
   verification_failed: '未通过内容已拦截',
   model_unavailable: '模型暂不可用',
+  source_unavailable: '在线来源未连接',
   error: '请求失败',
 }
 
 export default function Home() {
   const [view, setView] = useState<'ask' | 'library'>('ask')
   const [health, setHealth] = useState<Health>()
+  const [providers, setProviders] = useState<ProviderStatus[]>([])
   const [documents, setDocuments] = useState<LegalDocument[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
@@ -38,12 +40,14 @@ export default function Home() {
   const [modelDialogOpen, setModelDialogOpen] = useState(false)
   const [toast, setToast] = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
+  const pkulaw = providers.find((provider) => provider.provider === 'pkulaw')
 
   useEffect(() => {
-    Promise.all([getHealth(), getDocuments()])
-      .then(([healthData, documentData]) => {
+    Promise.all([getHealth(), getDocuments(), getProviders()])
+      .then(([healthData, documentData, providerData]) => {
         setHealth(healthData)
         setDocuments(documentData.documents)
+        setProviders(providerData.providers)
       })
       .catch(() => setToast('后端尚未连接，请确认开发服务已完整启动。'))
   }, [])
@@ -70,6 +74,7 @@ export default function Home() {
       setMessages((current) => [...current, {
         id: crypto.randomUUID(), role: 'assistant', content: response.answer,
         status: response.status, evidence: response.evidence, verification: response.verification,
+        retrieval: response.retrieval,
       }])
       setActiveEvidence(response.evidence)
       setSelected(response.evidence[0])
@@ -102,7 +107,7 @@ export default function Home() {
 
   async function copyEvidence(item: Evidence) {
     try {
-      await navigator.clipboard.writeText(`${item.document_title}${item.article_label}\n${item.text}\n来源：${item.source_url}`)
+      await navigator.clipboard.writeText(`${item.document_title}${item.article_label}\n${item.text}\n来源：${item.source_name}${item.source_url ? ` ${item.source_url}` : ''}`)
       setToast('原文与来源已复制')
     } catch {
       setToast('复制失败，请手动选择原文。')
@@ -140,11 +145,18 @@ export default function Home() {
             <div className="breadcrumb">律师研究工作台<span>/</span>{view === 'ask' ? '证据问答' : '法律文库'}</div>
             <h1>{view === 'ask' ? '法律文献证据问答' : '官方法律文库'}</h1>
           </div>
-          <button type="button" className={`model-status ${health?.model_configured ? 'is-online' : ''}`} onClick={() => setModelDialogOpen(true)}>
-            <span className="status-dot" />
-            {health ? (health.model_configured ? health.model : '原文检索模式') : '连接中'}
-            <CircleHelp size={15} />
-          </button>
+          <div className="connection-statuses">
+            <button type="button" className={`model-status provider-status ${pkulaw?.configured ? 'is-online' : ''}`} onClick={() => setModelDialogOpen(true)}>
+              <span className="status-dot" />
+              {pkulaw ? (pkulaw.configured ? '北大法宝已配置' : '北大法宝未配置') : '法宝连接中'}
+              <CircleHelp size={15} />
+            </button>
+            <button type="button" className={`model-status ${health?.model_configured ? 'is-online' : ''}`} onClick={() => setModelDialogOpen(true)}>
+              <span className="status-dot" />
+              {health ? (health.model_configured ? health.model : '原文检索模式') : '连接中'}
+              <CircleHelp size={15} />
+            </button>
+          </div>
         </header>
 
         {view === 'library' ? (
@@ -166,7 +178,7 @@ export default function Home() {
                         </button>
                       ))}
                     </div>
-                    <div className="scope-note"><ShieldCheck size={16} />当前范围：《中华人民共和国民法典》官方电子文本</div>
+                    <div className="scope-note"><ShieldCheck size={16} />本地官方《民法典》优先；{pkulaw?.configured ? '未命中时调用北大法宝 MCP' : '配置北大法宝后可扩展在线检索'}</div>
                   </div>
                 ) : (
                   <div className="message-list">
@@ -222,7 +234,7 @@ export default function Home() {
           </div>
         )}
       </main>
-      {modelDialogOpen && <ModelDialog health={health} onClose={() => setModelDialogOpen(false)} />}
+      {modelDialogOpen && <ModelDialog health={health} provider={pkulaw} onClose={() => setModelDialogOpen(false)} />}
       {toast && <div className="toast" role="status"><CheckCircle2 size={17} />{toast}</div>}
     </div>
   )

@@ -1,4 +1,4 @@
-import type { ChatResponse, Evidence, Health, LegalDocument } from '@/types/legal'
+import type { ChatResponse, Evidence, Health, LegalDocument, ProviderStatus } from '@/types/legal'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -16,6 +16,10 @@ export function getHealth() {
 
 export function getDocuments() {
   return request<{ documents: LegalDocument[] }>('/api/documents')
+}
+
+export function getProviders() {
+  return request<{ providers: ProviderStatus[] }>('/api/providers')
 }
 
 export function searchLaw(question: string, documentId?: string) {

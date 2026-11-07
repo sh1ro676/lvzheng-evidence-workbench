@@ -62,6 +62,7 @@
 .breadcrumb { margin-bottom: 6px; color: var(--muted); font-size: 12px; }
 .breadcrumb span { padding: 0 8px; color: var(--line-strong); }
 .workspace-header h1 { margin: 0; font-family: var(--font-serif); font-size: 27px; font-weight: 600; letter-spacing: .02em; }
+.connection-statuses { display: flex; align-items: center; gap: 8px; }
 .model-status {
   display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 12px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted);
@@ -220,6 +221,8 @@ kbd { padding: 2px 4px; border: 1px solid var(--line); border-radius: 4px; backg
 .model-dialog > svg { color: var(--accent); }
 .model-dialog h2 { margin: 14px 0 18px; font-family: var(--font-serif); font-size: 24px; }
 .model-dialog h3 { margin: 22px 0 8px; font-size: 14px; }
+.provider-dialog-section h3 { display: flex; align-items: center; gap: 7px; }
+.provider-dialog-section .model-connection { margin-bottom: 12px; }
 .model-dialog p { color: var(--muted); font-size: 13px; line-height: 1.7; }
 .model-connection { display: flex; gap: 10px; padding: 13px; border-radius: 8px; background: var(--warning-soft); color: var(--warning); }
 .model-connection.is-connected { background: var(--success-soft); color: var(--success); }
@@ -269,6 +272,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .model-status .status-dot, .model-status > svg { display: none; }
   .model-status { font-size: 0; }
   .model-status::after { content: '模型'; font-size: 11px; }
+  .provider-status::after { content: '法宝'; }
   .research-grid { display: flex; flex-direction: column; min-height: 0; }
   .conversation-panel { min-height: calc(100dvh - 130px); }
   .welcome-state { padding: 34px 20px 26px; }

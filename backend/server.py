@@ -10,6 +10,7 @@ from pathlib import Path
 
 from deepseek_client import DeepSeekClient, DeepSeekError, verify_answer
 from legal_store import LegalStore
+from pkulaw_mcp import PkulawError, PkulawProvider, extract_law_title
 
 ROOT = Path(__file__).resolve().parent
 
@@ -30,6 +31,31 @@ def load_project_env() -> None:
 load_project_env()
 STORE = LegalStore()
 DEEPSEEK = DeepSeekClient()
+PKULAW = PkulawProvider()
+
+
+def numbered_evidence(evidence: list[dict]) -> list[dict]:
+    return [{"citation_id": index, **item} for index, item in enumerate(evidence, start=1)]
+
+
+def retrieve_evidence(question: str, document_id: str | None = None, source: str = "auto") -> tuple[list[dict], dict]:
+    if source not in {"auto", "local", "pkulaw"}:
+        raise ValueError("不支持的数据源")
+    explicit_title = extract_law_title(question)
+    title_is_local = not explicit_title or any(
+        document["title"] == explicit_title or document["title"].endswith(explicit_title)
+        for document in STORE.documents
+    )
+    evidence = STORE.search(question, document_id) if source in {"auto", "local"} and title_is_local else []
+    if evidence or source == "local":
+        return evidence, {"source": "local_official", "provider": "flk", "cached": True}
+    if source == "auto" and not PKULAW.configured:
+        return [], {"source": "none", "provider": None, "notice": "本地未命中；北大法宝 MCP 尚未配置"}
+    result = PKULAW.search(question)
+    return result["evidence"], {
+        "source": "pkulaw", "provider": "pkulaw", "strategy": result["strategy"],
+        "tool": result["tool"], "cached": result["cached"], "queried_at": result["queried_at"],
+    }
 
 
 def response_payload(question: str, evidence: list[dict]) -> dict:
@@ -102,7 +128,11 @@ class Handler(BaseHTTPRequestHandler):
                 "model": DEEPSEEK.model,
                 "document_count": len(STORE.documents),
                 "article_count": len(STORE.articles),
+                "pkulaw_configured": PKULAW.configured,
             })
+            return
+        if path == "/api/providers":
+            self.send_json({"providers": [PKULAW.status()]})
             return
         if path == "/api/documents":
             self.send_json({"documents": STORE.document_list()})
@@ -115,14 +145,22 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_json({"error": "未找到条文"}, 404)
             return
-        if path == "/api/search":
+        if path in {"/api/search", "/api/legal/search"}:
             query = params.get("q", [""])[0].strip()
             document_id = params.get("document_id", [None])[0]
+            source = params.get("source", ["local" if path == "/api/search" else "auto"])[0]
             if not query:
                 self.send_json({"error": "请输入检索内容"}, 400)
                 return
-            evidence = STORE.search(query[:1000], document_id)
-            self.send_json({"query": query, "evidence": [{"citation_id": i, **item} for i, item in enumerate(evidence, 1)]})
+            try:
+                evidence, retrieval = retrieve_evidence(query[:1000], document_id, source)
+            except PkulawError as error:
+                self.send_json({"error": str(error), "provider": "pkulaw"}, 502)
+                return
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+                return
+            self.send_json({"query": query, "evidence": numbered_evidence(evidence), "retrieval": retrieval})
             return
         self.send_json({"error": "接口不存在"}, 404)
 
@@ -135,14 +173,27 @@ class Handler(BaseHTTPRequestHandler):
             data = self.read_json()
             question = str(data.get("question", "")).strip()
             document_id = data.get("document_id") or None
+            source = str(data.get("source") or "auto")
             if not question:
                 self.send_json({"error": "问题不能为空"}, 400)
                 return
             if len(question) > 2000:
                 self.send_json({"error": "单次任务不能超过 2000 字"}, 400)
                 return
-            evidence = STORE.search(question, document_id)
-            self.send_json(response_payload(question, evidence))
+            try:
+                evidence, retrieval = retrieve_evidence(question, document_id, source)
+            except PkulawError as error:
+                self.send_json({
+                    "status": "source_unavailable",
+                    "answer": f"本地官方文库未命中，北大法宝在线检索也未能完成：{error}。本次未调用模型补写法律内容。请检查连接配置后重试。",
+                    "evidence": [],
+                    "retrieval": {"source": "pkulaw", "provider": "pkulaw", "error": str(error)},
+                    "verification": {"passed": False, "checks": [{"name": "在线证据检索", "passed": False, "detail": str(error)}]},
+                })
+                return
+            payload = response_payload(question, evidence)
+            payload["retrieval"] = retrieval
+            self.send_json(payload)
         except (ValueError, json.JSONDecodeError) as error:
             self.send_json({"error": f"请求格式错误：{error}"}, 400)
         except Exception as error:
