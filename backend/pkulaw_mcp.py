@@ -22,11 +22,13 @@ ENDPOINTS = {
     "law_semantic": f"{GATEWAY}/mcp-law-search-service",
 }
 PREFERRED_TOOLS = {
-    "fatiao": "get_law_item_content",
-    "law_keyword": "get_law_list",
-    "law_semantic": "search_article",
+    "fatiao": "get_law_article",
+    "law_keyword": "search_law_articles_by_keyword",
+    "law_semantic": "search_law_articles",
 }
 TITLE_RE = re.compile(r"《([^》]+)》")
+COMPLEX_QUERY_RE = re.compile(r"什么|如何|怎么|怎样|哪些|为什么|为何|讲讲|解释|理解|分析|怎么办|能否|是否|案情|应当|责任|适用")
+HISTORY_QUERY_RE = re.compile(r"历史|旧版|废止|失效|修正|沿革")
 
 
 class PkulawError(RuntimeError):
@@ -183,6 +185,29 @@ def extract_law_title(question: str) -> str:
     return ""
 
 
+def select_strategy(question: str) -> str:
+    if extract_law_title(question) and ARTICLE_QUERY_RE.search(question):
+        return "fatiao"
+    if len(question.strip()) > 24 or COMPLEX_QUERY_RE.search(question):
+        return "law_semantic"
+    return "law_keyword"
+
+
+def schema_accepts(spec: dict, expected_type: str) -> bool:
+    if spec.get("type") == expected_type:
+        return True
+    return any(variant.get("type") == expected_type for variant in spec.get("anyOf", []) if isinstance(variant, dict))
+
+
+def keyword_query(question: str) -> str:
+    title = extract_law_title(question)
+    cleaned = TITLE_RE.sub("", question)
+    if title:
+        cleaned = cleaned.replace(title, "", 1)
+    cleaned = re.sub(r"^(?:请|帮我|给我|查一下|查询|检索|找找|找出)", "", cleaned)
+    return cleaned.strip(" \t，,。；;：:？?！!") or question
+
+
 def build_arguments(tool: dict, question: str, service: str) -> dict:
     schema = tool.get("inputSchema") or {}
     properties = schema.get("properties") or {}
@@ -194,8 +219,8 @@ def build_arguments(tool: dict, question: str, service: str) -> dict:
     names = list(properties)
     if not names:
         if service == "fatiao" and title and article_number is not None:
-            return {"title": title, "tiao_num": article_number}
-        return {"searchKey": question}
+            return {"law_title": title, "article_number": str(article_number)}
+        return {"query_text": question} if service == "law_semantic" else {"fulltext": keyword_query(question)}
 
     for name in names:
         key = name.lower()
@@ -205,8 +230,12 @@ def build_arguments(tool: dict, question: str, service: str) -> dict:
             value = title
         elif "tiao" in key or key in {"article", "article_num", "article_number", "articlenumber", "ft_num", "ftnum"}:
             value = article_number
-        elif key in {"searchkey", "query", "keyword", "keywords", "search", "search_text", "searchtext", "fulltext", "text"}:
+        elif key == "fulltext":
+            value = keyword_query(question)
+        elif key in {"searchkey", "query", "query_text", "querytext", "keyword", "keywords", "search", "search_text", "searchtext", "text"}:
             value = question
+        elif key == "timeliness" and not HISTORY_QUERY_RE.search(question):
+            value = "现行有效" if schema_accepts(spec, "string") else ["现行有效"]
         elif key in {"page", "page_num", "pagenum", "pageindex", "page_index"}:
             value = 1
         elif key in {"page_size", "pagesize", "size", "limit", "top_k", "topk", "return_num"}:
@@ -218,7 +247,7 @@ def build_arguments(tool: dict, question: str, service: str) -> dict:
                 value = question
         if value is not None:
             is_article_field = "tiao" in key or key in {"article", "article_num", "article_number", "articlenumber", "ft_num", "ftnum"}
-            if is_article_field and spec.get("type") == "string":
+            if is_article_field and schema_accepts(spec, "string"):
                 value = str(value)
             arguments[name] = value
 
@@ -280,13 +309,16 @@ def normalize_evidence(result: dict, question: str, match_type: str) -> list[dic
         label = _plain_text(_first(record, ("article_label", "articleLabel", "article_number", "articleNumber", "tiao_num", "tiaoNum", "ft_num", "ftNum", "article", "条号")))
         if not label and article_match and len(records) == 1:
             label = article_match.group(0)
+        if re.fullmatch(r"\d+(?:\.\d+)?", label):
+            label = f"第{label}条"
         text = _plain_text(_first(record, ("text", "content", "article_content", "articleContent", "law_content", "lawContent", "fulltext", "fullText", "条文内容", "法条内容", "内容")))
         if label and text.startswith(label):
             text = text[len(label):].lstrip()
         if not text:
             continue
-        source_id = _plain_text(_first(record, ("document_id", "documentId", "law_id", "lawId", "gid", "id", "法规ID")))
-        url = _plain_text(_first(record, ("source_url", "sourceUrl", "url", "link", "detail_url", "detailUrl", "详情链接")))
+        citation = record.get("citation") if isinstance(record.get("citation"), dict) else {}
+        source_id = _plain_text(_first(record, ("document_id", "documentId", "law_id", "lawId", "gid", "id", "法规ID")) or citation.get("gid"))
+        url = _plain_text(_first(record, ("source_url", "sourceUrl", "url", "link", "detail_url", "detailUrl", "详情链接")) or citation.get("url"))
         identity = (title, label, text)
         if identity in seen:
             continue
@@ -306,7 +338,7 @@ def normalize_evidence(result: dict, question: str, match_type: str) -> list[dic
             "published_at": _plain_text(_first(record, ("published_at", "publish_date", "issue_date", "promulgation_date", "fbrq", "公布日期", "发布日期"))),
             "effective_at": _plain_text(_first(record, ("effective_at", "effective_date", "implement_date", "ssrq", "施行日期", "实施日期"))),
             "status": _plain_text(_first(record, ("status", "timeliness", "validity", "sxx", "时效性", "效力状态"))) or "以来源页面为准",
-            "effect_level": _plain_text(_first(record, ("category", "effect_level", "effectiveness_level", "xljb", "效力级别"))),
+            "effect_level": _plain_text(_first(record, ("category", "effect_level", "effectiveness", "effectiveness_level", "xljb", "效力级别"))),
             "source_notice": "北大法宝 MCP 实时返回；正式引用前请打开来源链接，核对标准原文、效力与适用版本。",
             "match_type": match_type,
             "relevance": 1.0 if match_type == "exact" else 0.8,
@@ -356,7 +388,13 @@ class PkulawProvider:
     def search(self, question: str, strategy: str | None = None) -> dict:
         if not self.configured:
             raise PkulawError("尚未配置 PKULAW_AUTH_TOKEN")
-        selected = strategy or ("fatiao" if extract_law_title(question) and ARTICLE_QUERY_RE.search(question) else "law_keyword")
+        retrieval_question = question
+        correction_notice = None
+        if strategy is None:
+            retrieval_question, replacements = re.subn(r"低\s*(\d+)\s*条", r"第\1条", question)
+            if replacements:
+                correction_notice = f"已将“低{re.search(r'低\s*(\d+)\s*条', question).group(1)}条”按“第{re.search(r'低\s*(\d+)\s*条', question).group(1)}条”理解，并改用精准法条检索；请核对。"
+        selected = strategy or select_strategy(retrieval_question)
         cache_key = f"{selected}\n{question.strip()}"
         now = time.monotonic()
         with self._lock:
@@ -364,10 +402,13 @@ class PkulawProvider:
             if cached and now - cached[0] < self.cache_ttl:
                 self._cache.move_to_end(cache_key)
                 return {**cached[1], "cached": True}
-        response = self._call_service(selected, question)
+        response = self._call_service(selected, retrieval_question)
         if selected == "law_keyword" and not response["evidence"]:
-            response = self._call_service("law_semantic", question)
+            response = self._call_service("law_semantic", retrieval_question)
             response["fallback_from"] = "law_keyword"
+        if correction_notice:
+            response["notice"] = correction_notice
+            response["normalized_query"] = retrieval_question
         with self._lock:
             self._cache[cache_key] = (now, response)
             self._cache.move_to_end(cache_key)

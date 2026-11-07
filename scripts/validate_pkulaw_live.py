@@ -14,8 +14,10 @@ def main() -> int:
     if not PKULAW.configured:
         print(json.dumps({"configured": False, "error": "未检测到 PKULAW_AUTH_TOKEN，请确认已保存 .env"}, ensure_ascii=False, indent=2))
         return 2
+    question = sys.argv[1] if len(sys.argv) > 1 else "《中华人民共和国民法典》第1165条"
+    strategy = sys.argv[2] if len(sys.argv) > 2 else ("fatiao" if len(sys.argv) == 1 else None)
     try:
-        result = PKULAW.search("《中华人民共和国民法典》第1165条", strategy="fatiao")
+        result = PKULAW.search(question, strategy=strategy)
     except Exception as error:
         print(json.dumps({"configured": True, "ok": False, "error": str(error)}, ensure_ascii=False, indent=2))
         return 1

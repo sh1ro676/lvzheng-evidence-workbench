@@ -128,6 +128,8 @@ kbd { padding: 2px 4px; border: 1px solid var(--line); border-radius: 4px; backg
 .answer-status { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding: 3px 7px; border-radius: 5px; background: var(--surface-raised); color: var(--muted); font-size: 10px; }
 .answer-status.status-verified { background: var(--success-soft); color: var(--success); }
 .answer-status.status-verification_failed, .answer-status.status-error { background: var(--danger-soft); color: var(--danger); }
+.retrieval-notice { display: flex; align-items: flex-start; gap: 7px; margin: 0 0 13px; padding: 9px 11px; border-radius: 7px; background: var(--warning-soft); color: var(--warning); font-size: 12px; line-height: 1.6; }
+.retrieval-notice svg { flex: 0 0 auto; margin-top: 2px; }
 .answer-text { color: var(--ink); font-size: 16px; line-height: 1.8; }
 .answer-text p { margin: 0 0 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .answer-text p:last-child { margin-bottom: 0; }

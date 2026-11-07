@@ -25,7 +25,8 @@ def main() -> None:
         print(json.dumps({"configured": False}, ensure_ascii=False))
         return
     output = {"configured": True, "services": {}}
-    for service in ENDPOINTS:
+    selected_services = sys.argv[1:] or list(ENDPOINTS)
+    for service in selected_services:
         try:
             tools = server.PKULAW.client.list_tools(service)
             output["services"][service] = {
@@ -35,7 +36,7 @@ def main() -> None:
                         "name": tool.get("name", ""),
                         "description": tool.get("description", ""),
                         "required": (tool.get("inputSchema") or {}).get("required", []),
-                        "properties": list(((tool.get("inputSchema") or {}).get("properties") or {}).keys()),
+                        "properties": (tool.get("inputSchema") or {}).get("properties") or {},
                     }
                     for tool in tools
                 ],

@@ -3,7 +3,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from pkulaw_mcp import PkulawError, PkulawMCPClient, PkulawProvider, build_arguments, normalize_evidence
+from pkulaw_mcp import PkulawError, PkulawMCPClient, PkulawProvider, build_arguments, normalize_evidence, select_strategy
 
 
 class MockMCPHandler(BaseHTTPRequestHandler):
@@ -136,8 +136,15 @@ class PkulawMCPTest(unittest.TestCase):
     def test_runtime_schema_drives_arguments(self):
         tool = {"inputSchema": {"properties": {"title": {"type": "string"}, "tiao_num": {"type": "string"}}, "required": ["title", "tiao_num"]}}
         self.assertEqual(build_arguments(tool, "《刑法》第三条", "fatiao"), {"title": "刑法", "tiao_num": "3"})
-        live_tool = {"inputSchema": {"properties": {"title": {"type": "string"}, "article_number": {"type": "string"}}, "required": ["title", "article_number"]}}
-        self.assertEqual(build_arguments(live_tool, "《民法典》第1165条", "fatiao"), {"title": "民法典", "article_number": "1165"})
+        live_tool = {"inputSchema": {"properties": {"law_title": {"type": "string"}, "article_number": {"type": "string"}}, "required": ["law_title", "article_number"]}}
+        self.assertEqual(build_arguments(live_tool, "《民法典》第1165条", "fatiao"), {"law_title": "民法典", "article_number": "1165"})
+        semantic_tool = {"inputSchema": {"properties": {"query_text": {"anyOf": [{"type": "string"}, {"type": "null"}]}, "timeliness": {"anyOf": [{"type": "string"}, {"type": "null"}]}, "size": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}
+        self.assertEqual(build_arguments(semantic_tool, "跟我讲讲刑法中的低7条，以及你有什么理解", "law_semantic"), {
+            "query_text": "跟我讲讲刑法中的低7条，以及你有什么理解", "timeliness": "现行有效", "size": 5,
+        })
+        self.assertEqual(select_strategy("跟我讲讲刑法中的低7条，以及你有什么理解"), "law_semantic")
+        self.assertEqual(select_strategy("格式条款"), "law_keyword")
+        self.assertEqual(select_strategy("《刑法》第七条"), "fatiao")
 
     def test_plain_text_result_still_has_traceable_source(self):
         result = {"content": [{"type": "text", "text": "检索结果原文"}]}
@@ -162,7 +169,7 @@ class PkulawMCPTest(unittest.TestCase):
             services = []
 
             def list_tools(self, service):
-                name = "get_law_list" if service == "law_keyword" else "search_article"
+                name = "search_law_articles_by_keyword" if service == "law_keyword" else "search_law_articles"
                 return [{"name": name, "inputSchema": {"properties": {"searchKey": {"type": "string"}}, "required": ["searchKey"]}}]
 
             def call_tool(self, service, tool_name, arguments):
@@ -172,10 +179,31 @@ class PkulawMCPTest(unittest.TestCase):
                 return {"content": [{"type": "text", "text": "语义检索命中的法条原文"}]}
 
         client = FallbackClient()
-        response = PkulawProvider(client=client).search("复杂自然语言法律问题")
+        response = PkulawProvider(client=client).search("格式条款")
         self.assertEqual(client.services, ["law_keyword", "law_semantic"])
         self.assertEqual(response["fallback_from"], "law_keyword")
         self.assertEqual(response["evidence"][0]["match_type"], "semantic")
+
+    def test_digit_article_typo_uses_precise_lookup_with_notice(self):
+        class PreciseClient:
+            configured = True
+            service = None
+            arguments = None
+
+            def list_tools(self, service):
+                self.service = service
+                return [{"name": "get_law_article", "inputSchema": {"properties": {"law_title": {"type": "string"}, "article_number": {"type": "string"}}, "required": ["law_title", "article_number"]}}]
+
+            def call_tool(self, service, tool_name, arguments):
+                self.arguments = arguments
+                return {"structuredContent": {"result": [{"law_title": "中华人民共和国刑法(2023修正)", "article_number": "7", "article_content": "第七条 中华人民共和国公民在中华人民共和国领域外犯本法规定之罪的，适用本法。", "timeliness": "现行有效"}]}}
+
+        client = PreciseClient()
+        response = PkulawProvider(client=client).search("跟我讲讲刑法中的低7条，以及你有什么理解")
+        self.assertEqual(client.service, "fatiao")
+        self.assertEqual(client.arguments, {"law_title": "刑法", "article_number": "7"})
+        self.assertIn("第7条", response["notice"])
+        self.assertEqual(response["evidence"][0]["article_label"], "第7条")
 
     def test_explicit_other_law_never_matches_civil_code_article(self):
         from server import retrieve_evidence

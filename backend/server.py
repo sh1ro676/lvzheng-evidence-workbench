@@ -55,6 +55,7 @@ def retrieve_evidence(question: str, document_id: str | None = None, source: str
     return result["evidence"], {
         "source": "pkulaw", "provider": "pkulaw", "strategy": result["strategy"],
         "tool": result["tool"], "cached": result["cached"], "queried_at": result["queried_at"],
+        "notice": result.get("notice"),
     }
 
 

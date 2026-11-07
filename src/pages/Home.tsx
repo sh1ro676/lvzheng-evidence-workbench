@@ -193,6 +193,7 @@ export default function Home() {
                               <strong>证据助手</strong>
                               {message.status && <span className={`answer-status status-${message.status}`}>{message.status === 'verified' ? <CheckCircle2 size={13} /> : message.status === 'error' ? <AlertCircle size={13} /> : <ShieldCheck size={13} />}{statusLabels[message.status]}</span>}
                             </div>
+                            {message.retrieval?.notice && <div className="retrieval-notice"><AlertCircle size={14} />{message.retrieval.notice}</div>}
                             <AnswerText text={message.content} onCitation={showCitation} />
                             {message.verification && (
                               <details className="verification-details">
