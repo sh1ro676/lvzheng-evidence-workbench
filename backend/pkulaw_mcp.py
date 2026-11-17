@@ -395,7 +395,8 @@ class PkulawProvider:
         if strategy is None:
             retrieval_question, replacements = re.subn(r"低\s*(\d+)\s*条", r"第\1条", question)
             if replacements:
-                correction_notice = f"已将“低{re.search(r'低\s*(\d+)\s*条', question).group(1)}条”按“第{re.search(r'低\s*(\d+)\s*条', question).group(1)}条”理解，并改用精准法条检索；请核对。"
+                article_number = re.search(r"低\s*(\d+)\s*条", question).group(1)
+                correction_notice = f"已将“低{article_number}条”按“第{article_number}条”理解，并改用精准法条检索；请核对。"
         selected = strategy or select_strategy(retrieval_question)
         cache_key = f"{selected}\n{question.strip()}"
         now = time.monotonic()

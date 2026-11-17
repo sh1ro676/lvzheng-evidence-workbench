@@ -50,6 +50,8 @@ jobs:
         with:
           name: backend-${{ matrix.python }}-${{ env.TESTED_COMMIT }}
           path: .validation/ci/
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 7
 
   frontend:
@@ -93,4 +95,6 @@ jobs:
         with:
           name: browser-${{ env.TESTED_COMMIT }}
           path: .validation/browser/
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 7
