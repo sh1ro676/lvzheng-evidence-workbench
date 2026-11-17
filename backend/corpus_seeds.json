@@ -1,0 +1,222 @@
+[
+  {
+    "slug": "pku-liu-kaixiang-civil-code",
+    "url": "https://www.law.pku.edu.cn/xwzx/xsxw/pl/123316.htm",
+    "title": "刘凯湘：民法典相关公开评论",
+    "folder": "universities",
+    "institution": "北京大学法学院",
+    "professors": ["刘凯湘"],
+    "topics": ["中华人民共和国民法典"],
+    "source_type": "教授公开评论"
+  },
+  {
+    "slug": "pku-chen-xingliang-criminal-law",
+    "url": "https://www.law.pku.edu.cn/gdpx/szll/axk/xfx/119043.htm",
+    "title": "陈兴良：刑法相关公开资料",
+    "folder": "universities",
+    "institution": "北京大学法学院",
+    "professors": ["陈兴良"],
+    "topics": ["中华人民共和国刑法"],
+    "source_type": "教授公开资料"
+  },
+  {
+    "slug": "tsinghua-zhang-jianwei-self-defense",
+    "url": "https://www.law.tsinghua.edu.cn/info/1132/20311.htm",
+    "title": "《第二十条》法条解析：正当防卫如何适用",
+    "folder": "universities",
+    "institution": "清华大学法学院",
+    "professors": ["张建伟"],
+    "topics": ["中华人民共和国刑法", "刑法第20条"],
+    "source_type": "教授公开资料"
+  },
+  {
+    "slug": "pku-che-hao-criminal-law",
+    "url": "https://www.law.pku.edu.cn/xwzx/xsxw/pl/130278.htm",
+    "title": "车浩：刑法相关公开评论",
+    "folder": "universities",
+    "institution": "北京大学法学院",
+    "professors": ["车浩"],
+    "topics": ["中华人民共和国刑法"],
+    "source_type": "教授公开评论"
+  },
+  {
+    "slug": "nwupl-li-kangning-civil-code",
+    "url": "https://www.nwupl.edu.cn/news/mbbd/bkdz/84782.htm",
+    "title": "李康宁：民法典相关公开资料",
+    "folder": "universities",
+    "institution": "西北政法大学",
+    "professors": ["李康宁"],
+    "topics": ["中华人民共和国民法典"],
+    "source_type": "教授公开资料"
+  },
+  {
+    "slug": "pku-ge-yunsong-article-1254",
+    "url": "https://www.law.pku.edu.cn/xwzx/xwdt/8adac26b56974b0fb9504ac16daf6ab3.htm",
+    "title": "葛云松：高空抛物、因果关系与证明责任",
+    "folder": "universities",
+    "institution": "北京大学法学院",
+    "professors": ["葛云松"],
+    "topics": ["中华人民共和国民法典", "民法典第1254条"],
+    "source_type": "教授公开研讨会观点"
+  },
+  {
+    "slug": "tsinghua-cui-jianyuan-civil-code",
+    "url": "https://www.law.tsinghua.edu.cn/info/1167/20606.htm",
+    "title": "崔建远：《民法典》领军物权规范发展",
+    "folder": "universities",
+    "institution": "清华大学法学院",
+    "professors": ["崔建远"],
+    "topics": ["中华人民共和国民法典", "民法典物权编", "相关司法解释"],
+    "source_type": "教授公开署名文章"
+  },
+  {
+    "slug": "nwupl-contract-interpretation-seminar",
+    "url": "https://msfxy.nwupl.edu.cn/khxj/hsdt/118721.htm",
+    "title": "《民法典·合同编通则解释》重点问题研讨会",
+    "folder": "universities",
+    "institution": "西北政法大学民商法学院",
+    "professors": ["张翔", "赵林青", "孙玉红"],
+    "topics": ["中华人民共和国民法典", "合同编通则司法解释"],
+    "source_type": "教授公开研讨会观点"
+  },
+  {
+    "slug": "nwupl-marriage-interpretation-seminar",
+    "url": "https://msfxy.nwupl.edu.cn/xwdt/134978.htm",
+    "title": "《民法典婚姻家庭编的解释（二）》条文解析研讨会",
+    "folder": "universities",
+    "institution": "西北政法大学民商法学院",
+    "professors": ["马钰凤", "录睿琪"],
+    "topics": ["中华人民共和国民法典", "婚姻家庭编司法解释（二）"],
+    "source_type": "教授公开研讨会观点"
+  },
+  {
+    "slug": "cupl-civil-code-autonomous-organizations",
+    "url": "https://newspaper.cupl.edu.cn/index/article/articleinfo.html?doc_id=8883",
+    "title": "民法典物权编基层群众性自治组织相关条文解读",
+    "folder": "universities",
+    "institution": "中国政法大学",
+    "professors": [],
+    "topics": ["中华人民共和国民法典"],
+    "source_type": "高校官方校报公开资料"
+  },
+  {
+    "slug": "cupl-guo-shuo-criminal-retrial",
+    "url": "https://qks.swupl.edu.cn/qks/qks_tzgg/ee196b463b824bd99e0fa8390667d7d7.htm",
+    "title": "郭烁：刑事再审启动——路径选择与理论反思",
+    "folder": "universities",
+    "institution": "中国政法大学诉讼法学研究院",
+    "professors": ["郭烁"],
+    "topics": ["中华人民共和国刑事诉讼法", "刑事诉讼法第254条", "相关司法解释"],
+    "source_type": "公开期刊全文"
+  },
+  {
+    "slug": "cuplpress-li-yongjun-civil-law-textbook",
+    "url": "http://www.cuplpress.com/index.php?m=book&a=detail&id=13781",
+    "title": "李永军《民法学教程》公开书目信息",
+    "folder": "universities",
+    "institution": "中国政法大学",
+    "professors": ["李永军"],
+    "topics": ["中华人民共和国民法典", "教材书目"],
+    "source_type": "出版社公开书目"
+  },
+  {
+    "slug": "tsinghua-library-zhang-mingkai-textbook",
+    "url": "https://lib.tsinghua.edu.cn/law/info/1193/2131.htm",
+    "title": "张明楷《刑法学》第七版公开书目信息",
+    "folder": "universities",
+    "institution": "清华大学",
+    "professors": ["张明楷"],
+    "topics": ["中华人民共和国刑法", "教材书目"],
+    "source_type": "高校图书馆公开书目"
+  },
+  {
+    "slug": "spc-guiding-cases-road-traffic-2026",
+    "url": "https://www.court.gov.cn/zixun/xiangqing/489281.html",
+    "title": "最高人民法院道路交通安全刑事专题指导性案例",
+    "folder": "court",
+    "institution": "最高人民法院",
+    "professors": [],
+    "topics": ["中华人民共和国刑法", "中华人民共和国刑事诉讼法", "指导性案例"],
+    "source_type": "官方指导性案例"
+  },
+  {
+    "slug": "spc-guiding-cases-environment-2025",
+    "url": "https://www.court.gov.cn/zixun/xiangqing/466251.html",
+    "title": "最高人民法院生态环境保护专题指导性案例",
+    "folder": "court",
+    "institution": "最高人民法院",
+    "professors": [],
+    "topics": ["中华人民共和国民法典", "中华人民共和国刑法", "中华人民共和国刑事诉讼法", "指导性案例"],
+    "source_type": "官方指导性案例"
+  },
+  {
+    "slug": "spc-guiding-cases-enforcement-2025",
+    "url": "https://www.court.gov.cn/zixun/xiangqing/461281.html",
+    "title": "最高人民法院首批执行实施专题指导性案例",
+    "folder": "court",
+    "institution": "最高人民法院",
+    "professors": [],
+    "topics": ["中华人民共和国民事诉讼法", "中华人民共和国刑法", "指导性案例"],
+    "source_type": "官方指导性案例"
+  },
+  {
+    "slug": "spc-guiding-cases-batch-44",
+    "url": "https://www.court.gov.cn/zixun/xiangqing/459191.html",
+    "title": "最高人民法院第44批指导性案例",
+    "folder": "court",
+    "institution": "最高人民法院",
+    "professors": [],
+    "topics": ["中华人民共和国民法典", "中华人民共和国刑法", "中华人民共和国刑事诉讼法", "指导性案例"],
+    "source_type": "官方指导性案例"
+  },
+  {
+    "slug": "spc-guiding-cases-minors-2024",
+    "url": "https://www.court.gov.cn/shenpan/xiangqing/433761.html",
+    "title": "最高人民法院未成年人司法保护专题指导性案例",
+    "folder": "court",
+    "institution": "最高人民法院",
+    "professors": [],
+    "topics": ["中华人民共和国民法典", "指导性案例"],
+    "source_type": "官方指导性案例"
+  },
+  {
+    "slug": "spp-evidence-third-person-2026",
+    "url": "https://www.spp.gov.cn/spp/llyj/202610/t20261014_738553.shtml",
+    "title": "刑事审查重在完善证据、排除第三人作案合理怀疑",
+    "folder": "spp",
+    "institution": "最高人民检察院",
+    "professors": [],
+    "topics": ["中华人民共和国刑事诉讼法", "指导性案例"],
+    "source_type": "官方指导案例评析"
+  },
+  {
+    "slug": "spp-guiding-cases-batch-53",
+    "url": "https://www.spp.gov.cn/spp/xwfbh/wsfbt/202406/t20240613_656853.shtml",
+    "title": "最高人民检察院第五十三批指导性案例",
+    "folder": "spp",
+    "institution": "最高人民检察院",
+    "professors": [],
+    "topics": ["中华人民共和国刑法", "中华人民共和国刑事诉讼法", "指导性案例"],
+    "source_type": "官方指导性案例"
+  },
+  {
+    "slug": "spp-guiding-cases-batch-44",
+    "url": "https://www.spp.gov.cn/xwfbh/wsfbt/202306/t20230613_617257.shtml",
+    "title": "最高人民检察院第四十四批指导性案例",
+    "folder": "spp",
+    "institution": "最高人民检察院",
+    "professors": [],
+    "topics": ["中华人民共和国刑法", "中华人民共和国刑事诉讼法", "指导性案例"],
+    "source_type": "官方指导性案例"
+  },
+  {
+    "slug": "spp-guiding-cases-batch-17",
+    "url": "https://www.spp.gov.cn/spp/xwfbh/wsfbt/202003/t20200325_457166.shtml",
+    "title": "最高人民检察院第十七批指导性案例",
+    "folder": "spp",
+    "institution": "最高人民检察院",
+    "professors": [],
+    "topics": ["中华人民共和国刑法", "中华人民共和国刑事诉讼法", "指导性案例"],
+    "source_type": "官方指导性案例"
+  }
+]

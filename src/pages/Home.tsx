@@ -1,30 +1,40 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   AlertCircle, ArrowUp, BookOpen, CheckCircle2, ChevronRight, CircleHelp,
-  FileSearch, Library, LoaderCircle, Plus, Scale, ShieldCheck, Sparkles,
+  FileSearch, Globe, Library, LoaderCircle, Plus, Scale, ShieldCheck, Sparkles,
 } from 'lucide-react'
 import { AnswerText } from '@/components/AnswerText'
 import { EvidencePanel } from '@/components/EvidencePanel'
 import { LibraryView } from '@/components/LibraryView'
 import { ModelDialog } from '@/components/ModelDialog'
-import { askLaw, getDocuments, getHealth, getProviders } from '@/lib/api'
-import type { AnswerStatus, ChatMessage, Evidence, Health, LegalDocument, ProviderStatus } from '@/types/legal'
+import { askLawStream, askSchools, getDocuments, getHealth, getProviders } from '@/lib/api'
+import type { AgentStage } from '@/lib/api'
+import type { AnswerStatus, ChatMessage, Evidence, Health, LegalDocument, ProviderStatus, SchoolResponse } from '@/types/legal'
 import '../App.css'
 
 const examples = [
   { title: '精确读取', query: '请给出《中华人民共和国民法典》第 1165 条原文，并解释其含义。' },
   { title: '对比分析', query: '对比第一千一百六十五条与第一千一百六十六条的归责原则。' },
   { title: '通俗改写', query: '把第一千零七十七条改写成一段面向当事人的通俗说明，保留关键期限。' },
+  { title: '观点检索', query: '查找李永军教授关于《民法典》第 368 条居住权登记的公开观点，列明网页来源。' },
 ]
 
 const statusLabels: Record<AnswerStatus, string> = {
   verified: '引用校验通过',
   retrieval_only: '原文已定位',
   insufficient_evidence: '证据不足',
-  verification_failed: '未通过内容已拦截',
+  verification_failed: '回答已展示 · 引用需复核',
   model_unavailable: '模型暂不可用',
   source_unavailable: '在线来源未连接',
   error: '请求失败',
+}
+
+const stageLabels: Record<AgentStage, { title: string; detail: string }> = {
+  planning: { title: '正在理解问题', detail: '判断任务类型，并确定需要核对的资料' },
+  retrieving: { title: '正在并行检索资料', detail: '同时查询法条、教材与公开网页；首条网页查询有效即停止' },
+  supplementing: { title: '正在补充相关法条', detail: '根据案件事实核对涉及罪名的法律原文' },
+  generating: { title: '正在生成完整回答', detail: '正文会逐字显示，检索资料只作增强，不限制模型分析' },
+  verifying: { title: '正在核对引用与来源', detail: '检查证据编号和直接引语，必要时自动修正' },
 }
 
 export default function Home() {
@@ -35,11 +45,14 @@ export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [stage, setStage] = useState<AgentStage>('planning')
+  const [webSearch, setWebSearch] = useState(true)
   const [activeEvidence, setActiveEvidence] = useState<Evidence[]>([])
   const [selected, setSelected] = useState<Evidence>()
   const [modelDialogOpen, setModelDialogOpen] = useState(false)
   const [toast, setToast] = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
+  const inFlightRef = useRef(false)
   const pkulaw = providers.find((provider) => provider.provider === 'pkulaw')
 
   useEffect(() => {
@@ -64,27 +77,120 @@ export default function Home() {
 
   async function submitQuestion(value: string) {
     const question = value.trim()
-    if (!question || loading) return
+    if (!question || inFlightRef.current) return
+    inFlightRef.current = true
     setView('ask')
     setInput('')
     setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'user', content: question }])
+    setStage('planning')
     setLoading(true)
+    const assistantId = crypto.randomUUID()
     try {
-      const response = await askLaw(question, documents[0]?.document_id)
+      // 先建立空回答，阶段事件显示检索进度，正文增量到达后直接流式渲染。
       setMessages((current) => [...current, {
-        id: crypto.randomUUID(), role: 'assistant', content: response.answer,
-        status: response.status, evidence: response.evidence, verification: response.verification,
-        retrieval: response.retrieval,
+        id: assistantId, role: 'assistant', content: '', following: false,
       }])
+      const response = await askLawStream(question, (delta) => {
+        setMessages((current) => current.map((message) => message.id === assistantId
+          ? { ...message, content: message.content + delta }
+          : message))
+      }, (replacement) => {
+        // 引用修正后整段覆盖，但不再用拦截说明替代回答。
+        setMessages((current) => current.map((message) => message.id === assistantId
+          ? { ...message, content: replacement }
+          : message))
+      }, webSearch, setStage)
+      setMessages((current) => current.map((message) => message.id === assistantId
+        ? {
+            ...message, content: response.answer || message.content,
+            status: response.status, evidence: response.evidence,
+            verification: response.verification, retrieval: response.retrieval,
+            following: response.followup === 'schools',
+          }
+        : message))
       setActiveEvidence(response.evidence)
       setSelected(response.evidence[0])
+      setLoading(false)
+
+      // 法条、学理与案件均在后台独立补充四校观点，不重写已完成的主回答。
+      if (response.followup === 'schools') {
+        askSchools(question).then((school: SchoolResponse) => {
+          const offset = response.evidence.length
+          const schoolEvidence = school.evidence.map((item) => ({
+            ...item, citation_id: item.citation_id + offset,
+          }))
+          setMessages((current) => current.map((message) => {
+            if (message.id !== assistantId) return message
+            if (school.replace && school.section) {
+              return {
+                ...message,
+                following: false,
+                content: school.section,
+                status: school.status,
+                verification: school.verification ?? message.verification,
+                evidence: school.evidence,
+                schoolRetrieval: school.retrieval?.web_search,
+              }
+            }
+            if (school.replace && !school.section) {
+              return {
+                ...message,
+                following: false,
+                schoolNotice: '公开资料检索未获得可用内容，保留当前完整回答。',
+                schoolRetrieval: school.retrieval?.web_search,
+              }
+            }
+            const section = school.section
+              ? school.section.replace(/【证据(\d+)】/g, (_all: string, n: string) => `【证据${Number(n) + offset}】`)
+              : ''
+            const title = school.section_title || '四校教授观点'
+            const tail = section
+              ? `\n\n## ${title}\n\n${section}`
+              : `\n\n## ${title}\n\n本次未检索到可核验的四校公开观点，主回答保持不变。`
+            return {
+              ...message,
+              following: false,
+              content: message.content + tail,
+              evidence: [...(message.evidence ?? []), ...schoolEvidence],
+              schoolRetrieval: school.retrieval?.web_search,
+            }
+          }))
+          if (school.replace) {
+            setActiveEvidence(school.evidence)
+            setSelected(school.evidence[0])
+          } else if (schoolEvidence.length) {
+            setActiveEvidence((current) => [...current, ...schoolEvidence])
+          }
+        }).catch(() => {
+          setMessages((current) => current.map((message) => {
+            if (message.id !== assistantId) return message
+            // 第一段若是"正在检索"占位，失败时别把这句话留在页面上。
+            const placeholder = message.content.startsWith('正在检索')
+            return {
+              ...message,
+              following: false,
+              content: placeholder ? '未能获取该问题的公开资料，请稍后重试或换一种问法。' : message.content,
+              schoolNotice: '公开资料与四校观点检索失败或超时，可稍后重试。',
+            }
+          }))
+        })
+      }
     } catch (error) {
+      setLoading(false)
       const content = error instanceof Error ? error.message : '请求失败，请稍后重试。'
-      setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content, status: 'error' }])
+      setMessages((current) => {
+        const hasPlaceholder = current.some((message) => message.id === assistantId)
+        if (!hasPlaceholder) {
+          return [...current, { id: crypto.randomUUID(), role: 'assistant', content, status: 'error' }]
+        }
+        return current.map((message) => message.id === assistantId
+          ? { ...message, content, status: 'error', following: false }
+          : message)
+      })
       setActiveEvidence([])
       setSelected(undefined)
     } finally {
-      setLoading(false)
+      inFlightRef.current = false
     }
   }
 
@@ -96,9 +202,11 @@ export default function Home() {
     setView('ask')
   }
 
-  function showCitation(citationId: number) {
-    const item = activeEvidence.find((evidence) => evidence.citation_id === citationId)
+  function showCitation(citationId: number, messageEvidence?: Evidence[]) {
+    const evidence = messageEvidence ?? activeEvidence
+    const item = evidence.find((entry) => entry.citation_id === citationId)
     if (!item) return
+    setActiveEvidence(evidence)
     setSelected(item)
     window.setTimeout(() => {
       window.document.getElementById(`evidence-${citationId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -119,25 +227,25 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><Scale size={22} /></div>
-          <div><strong>律证</strong><span>法律文献证据工作台</span></div>
+          <div><strong>律途</strong><span>法律 AI 助手</span></div>
         </div>
-        <button type="button" className="new-task-button" onClick={newTask}><Plus size={17} />新建检索任务</button>
+        <button type="button" className="new-task-button" onClick={newTask}><Plus size={17} />新建法律任务</button>
         <nav className="main-nav" aria-label="主导航">
           <span className="nav-caption">工作空间</span>
-          <button type="button" className={view === 'ask' ? 'active' : ''} onClick={() => setView('ask')}><FileSearch size={18} />证据问答<ChevronRight size={15} /></button>
+          <button type="button" className={view === 'ask' ? 'active' : ''} onClick={() => setView('ask')}><FileSearch size={18} />法律问答<ChevronRight size={15} /></button>
           <button type="button" className={view === 'library' ? 'active' : ''} onClick={() => setView('library')}><Library size={18} />法律文库<ChevronRight size={15} /></button>
         </nav>
         <div className="sidebar-spacer" />
         <button type="button" className="sidebar-source" onClick={() => setView('library')}>
           <span className="source-icon"><BookOpen size={17} /></span>
-          <span><small>当前法律文库</small><strong>{documents[0]?.title.replace('中华人民共和国', '') || '正在连接'}</strong><em>{health ? `${health.article_count.toLocaleString()} 条原文已核验入库` : '正在读取文献状态'}</em></span>
+          <span><small>独立法律文库</small><strong>{documents.length > 1 ? `${documents.length} 部核心法律` : documents[0]?.title.replace('中华人民共和国', '') || '正在连接'}</strong><em>{health ? `${health.article_count.toLocaleString()} 条原文可供单独核验` : '正在读取文献状态'}</em></span>
         </button>
-        <div className="sidebar-foot"><ShieldCheck size={15} /><span>无证据，不生成法律结论</span></div>
+        <div className="sidebar-foot"><ShieldCheck size={15} /><span>模型完整分析，资料辅助核验</span></div>
       </aside>
 
       <main className="main-workspace">
         <div className="mobile-nav">
-          <div className="brand"><div className="brand-mark"><Scale size={20} /></div><strong>律证</strong></div>
+          <div className="brand"><div className="brand-mark"><Scale size={20} /></div><strong>律途</strong></div>
           <div><button type="button" className={view === 'ask' ? 'active' : ''} onClick={() => setView('ask')}>问答</button><button type="button" className={view === 'library' ? 'active' : ''} onClick={() => setView('library')}>文库</button></div>
         </div>
         <header className="workspace-header">
@@ -168,9 +276,9 @@ export default function Home() {
                 {messages.length === 0 ? (
                   <div className="welcome-state">
                     <div className="welcome-symbol">§</div>
-                    <span className="section-label">EVIDENCE BEFORE ANSWER</span>
-                    <h2>从原文开始，<br />而不是从答案开始。</h2>
-                    <p>输入法律问题、比较、归纳或改写任务。系统先定位官方法条，再让模型基于证据作答。</p>
+                    <span className="section-label">LEGAL AGENT WITH SOURCES</span>
+                    <h2>先理解你的问题，<br />再用法律知识回答。</h2>
+                    <p>可以直接询问案件、法律概念、实务分析或文书任务。模型会完整组织回答，北大法宝、教材和公开网页用于补充专业知识与核对出处。</p>
                     <div className="example-list">
                       {examples.map((example) => (
                         <button type="button" key={example.title} onClick={() => void submitQuestion(example.query)}>
@@ -178,7 +286,7 @@ export default function Home() {
                         </button>
                       ))}
                     </div>
-                    <div className="scope-note"><ShieldCheck size={16} />本地官方《民法典》优先；{pkulaw?.configured ? '未命中时调用北大法宝 MCP' : '配置北大法宝后可扩展在线检索'}</div>
+                    <div className="scope-note"><ShieldCheck size={16} />模型分析不被检索结果限制；具体事实与引用来源单独标注</div>
                   </div>
                 ) : (
                   <div className="message-list">
@@ -194,7 +302,33 @@ export default function Home() {
                               {message.status && <span className={`answer-status status-${message.status}`}>{message.status === 'verified' ? <CheckCircle2 size={13} /> : message.status === 'error' ? <AlertCircle size={13} /> : <ShieldCheck size={13} />}{statusLabels[message.status]}</span>}
                             </div>
                             {message.retrieval?.notice && <div className="retrieval-notice"><AlertCircle size={14} />{message.retrieval.notice}</div>}
-                            <AnswerText text={message.content} onCitation={showCitation} />
+                            <AnswerText
+                              text={message.content}
+                              evidence={message.evidence ?? []}
+                              webSearch={message.schoolRetrieval ?? message.retrieval?.web_search}
+                              onCitation={(citationId) => showCitation(citationId, message.evidence ?? [])}
+                            />
+                            {message.retrieval?.web_search?.enabled && (
+                              <details className="verification-details web-search-details">
+                                <summary>联网检索记录 · {message.retrieval.web_search.fetched_count} 个有效网页 · {message.retrieval.web_search.search_count} 次搜索</summary>
+                                {message.retrieval.web_search.queries.length > 0 && <div className="web-search-queries">实际检索词：{message.retrieval.web_search.queries.join('；')}</div>}
+                                <ul>{message.retrieval.web_search.events.map((event, index) => <li key={`${event.stage}-${index}`}>{event.ok ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}<span><strong>{event.institution ? `${event.institution} · ` : ''}{({ plan: '检索规划', search: '网页搜索', candidate: '搜索候选', retry: '换词重试', fetch: '正文抓取', filter: '筛选排除', evidence: '纳入证据', entity: '人物线索', second_round: '人物精确复核' } as const)[event.stage]}</strong>{(event.entity ? `发现人物：${event.entity}` : '') || event.error || event.reason || (event.stage === 'search' && event.result_count !== undefined ? `找到 ${event.result_count} 个结果` : '') || (event.title ? `${event.title} · ${event.url}` : '') || event.query || event.url || '已完成'}</span></li>)}</ul>
+                              </details>
+                            )}
+                            {message.following && <div className="retrieval-notice"><LoaderCircle className="spin" size={14} />正在后台检索四校观点，完成后自动追加到本节下方</div>}
+                            {message.schoolNotice && <div className="retrieval-notice"><AlertCircle size={14} />{message.schoolNotice}</div>}
+                            {message.schoolRetrieval?.enabled && (
+                              <details className="verification-details web-search-details">
+                                <summary>四校检索记录 · {message.schoolRetrieval.fetched_count} 个有效网页 · {message.schoolRetrieval.search_count} 次搜索</summary>
+                                {message.schoolRetrieval.institution_results && (
+                                  <div className="web-search-queries">
+                                    各校命中：{message.schoolRetrieval.institution_results.map((item) => `${item.institution}${item.found ? '✓' : '×'}`).join(' · ')}
+                                  </div>
+                                )}
+                                {message.schoolRetrieval.queries.length > 0 && <div className="web-search-queries">实际检索词：{message.schoolRetrieval.queries.join('；')}</div>}
+                                <ul>{message.schoolRetrieval.events.map((event, index) => <li key={`${event.stage}-${index}`}>{event.ok ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}<span><strong>{event.institution ? `${event.institution} · ` : ''}{({ plan: '检索规划', search: '网页搜索', candidate: '搜索候选', retry: '换词重试', fetch: '正文抓取', filter: '筛选排除', evidence: '纳入证据', entity: '人物线索', second_round: '人物精确复核' } as const)[event.stage]}</strong>{(event.entity ? `发现人物：${event.entity}` : '') || event.error || event.reason || (event.stage === 'search' && event.result_count !== undefined ? `找到 ${event.result_count} 个结果` : '') || (event.title ? `${event.title} · ${event.url}` : '') || event.query || event.url || '已完成'}</span></li>)}</ul>
+                              </details>
+                            )}
                             {message.verification && (
                               <details className="verification-details">
                                 <summary>查看校验记录</summary>
@@ -205,7 +339,7 @@ export default function Home() {
                         )}
                       </div>
                     ))}
-                    {loading && <div className="loading-state" role="status"><LoaderCircle className="spin" size={20} /><div><strong>正在检索并核对官方原文</strong><span>如已配置模型，将在生成后执行独立引用校验</span></div></div>}
+                    {loading && <div className="loading-state" role="status" data-stage={stage}><LoaderCircle className="spin" size={20} /><div><strong>{stageLabels[stage].title}</strong><span>{stageLabels[stage].detail}</span></div></div>}
                     <div ref={chatEndRef} />
                   </div>
                 )}
@@ -225,13 +359,16 @@ export default function Home() {
                   rows={3}
                 />
                 <div className="composer-bottom">
-                  <span><kbd>Ctrl</kbd>＋<kbd>Enter</kbd> 发送<span className="character-count">{input.length}/2000</span></span>
+                  <div className="composer-tools">
+                    <button type="button" className={`web-toggle ${webSearch ? 'active' : ''}`} onClick={() => setWebSearch((enabled) => !enabled)} aria-pressed={webSearch} title="案件问题检索公开事实，法条问题可后台补充四校观点"><Globe size={15} />联网增强<span>{webSearch ? '案件与四校' : '已关闭'}</span></button>
+                    <span className="keyboard-hint"><kbd>Ctrl</kbd>＋<kbd>Enter</kbd> 发送<span className="character-count">{input.length}/2000</span></span>
+                  </div>
                   <button type="submit" className="send-button" disabled={!input.trim() || loading} aria-label="发送任务"><ArrowUp size={19} /></button>
                 </div>
               </form>
               <p className="legal-disclaimer">检索结果与模型输出仅作研究辅助，正式使用前请由律师复核。</p>
             </section>
-            <EvidencePanel evidence={activeEvidence} selectedId={selected?.article_id} onSelect={setSelected} onCopy={copyEvidence} />
+            <EvidencePanel evidence={activeEvidence} selectedCitationId={selected?.citation_id} onSelect={setSelected} onCopy={copyEvidence} />
           </div>
         )}
       </main>

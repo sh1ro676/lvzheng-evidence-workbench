@@ -8,6 +8,37 @@ from pathlib import Path
 from typing import Iterable
 
 ARTICLE_QUERY_RE = re.compile(r"第\s*([〇零一二三四五六七八九十百千万两0-9]+)\s*条")
+# 刑法大量使用「第133条之一」这类增补条。若只按基础条号建索引，
+# 增补条会覆盖同号的主条（第133条之二把交通肇事罪挤掉），必须连「之X」一起作键。
+ARTICLE_KEY_RE = re.compile(
+    r"第\s*([〇零一二三四五六七八九十百千万两0-9]+)\s*条(?:\s*之\s*([一二三四五六七八九十]+))?"
+)
+
+
+def article_key(label: str) -> str | None:
+    """把条目标签转成检索键：『第133条』→ 133，『第133条之一』→ 133-1。"""
+    match = ARTICLE_KEY_RE.search(label or "")
+    if not match:
+        return None
+    number = chinese_number_to_int(match.group(1))
+    if match.group(2):
+        return f"{number}-{chinese_number_to_int(match.group(2))}"
+    return str(number)
+# 用户常写「刑法44条」「四十四条」，省略"第"字。若不先补成「第44条」，
+# 条号解析会失败并回落到语义检索，语义检索会把 44 当成近义数字，
+# 返回第4条、修正案(七)第四条这类噪声，真正的第44条反而丢失。
+BARE_ARABIC_ARTICLE_RE = re.compile(r"(?<!第)(?<![0-9])([0-9]{1,4})\s*条")
+BARE_CHINESE_ARTICLE_RE = re.compile(r"(?<!第)(?<![〇零一二三四五六七八九十百千万两])([〇零一二三四五六七八九十百千万两]{2,7})\s*条")
+
+
+def normalize_article_refs(text: str) -> str:
+    """把「44条」「四十四条」补成「第44条」，并统一全角数字。"""
+    import unicodedata
+
+    text = unicodedata.normalize("NFKC", text or "")
+    text = BARE_ARABIC_ARTICLE_RE.sub(r"第\1条", text)
+    text = BARE_CHINESE_ARTICLE_RE.sub(r"第\1条", text)
+    return text
 CHINESE_DIGITS = {"〇": 0, "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 CHINESE_UNITS = {"十": 10, "百": 100, "千": 1000}
 QUERY_EXPANSIONS = {
@@ -64,7 +95,7 @@ class LegalStore:
         self.data_dir = Path(data_dir) if data_dir else root
         self.documents: list[dict] = []
         self.articles: list[dict] = []
-        self._article_lookup: dict[tuple[str, int], dict] = {}
+        self._article_lookup: dict[tuple[str, str], dict] = {}
         self._article_by_id: dict[tuple[str, str], dict] = {}
         self._document_by_id: dict[str, dict] = {}
         self._tokens: list[Counter] = []
@@ -86,10 +117,9 @@ class LegalStore:
             self._document_by_id[document["document_id"]] = summary
             for article in document["articles"]:
                 enriched = {**article, "document": summary}
-                number_text = ARTICLE_QUERY_RE.search(article["article_label"])
-                if number_text:
-                    number = chinese_number_to_int(number_text.group(1))
-                    self._article_lookup[(document["document_id"], number)] = enriched
+                key = article_key(article["article_label"])
+                if key:
+                    self._article_lookup[(document["document_id"], key)] = enriched
                 self._article_by_id[(document["document_id"], article["article_id"])] = enriched
                 self.articles.append(enriched)
         self._build_index()
@@ -130,24 +160,41 @@ class LegalStore:
             "published_at": document["published_at"],
             "effective_at": document["effective_at"],
             "status": document["status"],
-            "source_notice": document["source_notice"],
+            "source_notice": document.get("source_notice", "国家法律法规数据库电子文本；与标准文本不一致时，请引用标准文本。"),
             "match_type": match_type,
             "relevance": round(max(0.0, min(score, 1.0)), 3),
         }
 
     def exact_matches(self, query: str, document_id: str | None = None) -> list[dict]:
-        numbers = []
-        for match in ARTICLE_QUERY_RE.finditer(query):
+        query = normalize_article_refs(query)
+        explicit_titles = re.findall(r"《([^》]+)》", query)
+        candidates = [document_id] if document_id else list(self._document_by_id)
+        if explicit_titles and not document_id:
+            def belongs(item: tuple[str, dict]) -> bool:
+                title = re.sub(r"^中华人民共和国", "", item[1]["title"])
+                return any(
+                    re.sub(r"^中华人民共和国", "", requested) in title
+                    for requested in explicit_titles
+                )
+            candidates = [item[0] for item in self._document_by_id.items() if belongs(item)]
+
+        keys: list[str] = []
+        for match in ARTICLE_KEY_RE.finditer(query):
             number = chinese_number_to_int(match.group(1))
-            if number not in numbers:
-                numbers.append(number)
+            key = f"{number}-{chinese_number_to_int(match.group(2))}" if match.group(2) else str(number)
+            if key not in keys:
+                keys.append(key)
         matches = []
-        for number in numbers:
-            candidates = [document_id] if document_id else list(self._document_by_id)
+        for key in keys:
             for candidate in candidates:
-                article = self._article_lookup.get((candidate, number))
+                article = self._article_lookup.get((candidate, key))
                 if article:
                     matches.append(self.to_evidence(article))
+        if not document_id and len(matches) > 1:
+            # 只说"第44条"不说法名时，四部法都有第44条；
+            # 按问题与条文用词的贴合度排序，避免总是民法典排第一。
+            query_tokens = set(tokenize(query))
+            matches.sort(key=lambda item: -len(query_tokens & set(tokenize(item.get("text", "")))))
         return matches
 
     def search(self, query: str, document_id: str | None = None, limit: int = 6) -> list[dict]:
@@ -189,7 +236,7 @@ class LegalStore:
         scored.sort(reverse=True)
         best_score, best_index = scored[0]
         # Precision first: weak incidental matches must become an explicit abstention.
-        if best_score < 14.0:
+        if best_score < 18.0:
             return []
         results = []
         for score, index in scored:

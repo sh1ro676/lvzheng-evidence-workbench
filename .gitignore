@@ -28,3 +28,9 @@ dist-ssr
 .validation/
 __pycache__/
 *.pyc
+
+# 运行时缓存与派生数据（不入库，按 README 重新生成）
+backend/cache/
+backend/data/books/
+backend/data/lvzheng-archive/
+article22-*.json

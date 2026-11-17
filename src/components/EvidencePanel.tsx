@@ -1,9 +1,9 @@
-import { BookOpen, Check, Copy, ExternalLink, FileCheck2, Fingerprint } from 'lucide-react'
-import type { Evidence, MatchType } from '@/types/legal'
+import { BookOpen, Check, Copy, ExternalLink, FileCheck2, Fingerprint, Globe, MapPin, University } from 'lucide-react'
+import type { Evidence, EvidenceTier, MatchType } from '@/types/legal'
 
 interface EvidencePanelProps {
   evidence: Evidence[]
-  selectedId?: string
+  selectedCitationId?: number
   onSelect: (item: Evidence) => void
   onCopy: (item: Evidence) => void
   compact?: boolean
@@ -14,9 +14,17 @@ const matchLabels: Record<MatchType, string> = {
   hybrid: '本地相关检索',
   keyword: '法宝关键词检索',
   semantic: '法宝语义检索',
+  web: '联网正文',
+  textbook: '教材内容 · OCR 待核',
 }
 
-export function EvidencePanel({ evidence, selectedId, onSelect, onCopy, compact = false }: EvidencePanelProps) {
+const evidenceTierLabels: Record<EvidenceTier, string> = {
+  primary: '一手资料',
+  reliable_report: '媒体报道',
+  secondary_unverified: '转述待核',
+}
+
+export function EvidencePanel({ evidence, selectedCitationId, onSelect, onCopy, compact = false }: EvidencePanelProps) {
   return (
     <section className={`evidence-panel ${compact ? 'is-compact' : ''}`} aria-label="原文证据">
       <div className="panel-heading">
@@ -36,10 +44,14 @@ export function EvidencePanel({ evidence, selectedId, onSelect, onCopy, compact 
       ) : (
         <div className="evidence-list">
           {evidence.map((item) => {
-            const selected = selectedId === item.article_id
+            const selected = selectedCitationId === item.citation_id
+            const isTextbook = item.provider === 'textbook'
+            const evidenceTierLabel = item.provider === 'deepseek_web' && item.evidence_tier
+              ? (item.evidence_tier_label || evidenceTierLabels[item.evidence_tier])
+              : undefined
             return (
               <article
-                className={`evidence-item ${selected ? 'is-selected' : ''}`}
+                className={`evidence-item ${selected ? 'is-selected' : ''} ${isTextbook ? 'is-textbook' : ''}`}
                 id={`evidence-${item.citation_id}`}
                 key={`${item.document_id}-${item.article_id}`}
               >
@@ -51,32 +63,53 @@ export function EvidencePanel({ evidence, selectedId, onSelect, onCopy, compact 
                   </span>
                   <span className="match-label">{matchLabels[item.match_type]}</span>
                 </button>
-                <div className="section-path">{item.section_path.join(' / ') || (item.provider === 'pkulaw' ? '北大法宝 MCP 实时证据' : '正文')}</div>
-                <div className={`legal-original ${!selected ? 'is-preview' : ''}`}>
+                {(item.institution || item.relevance_basis || evidenceTierLabel) && (
+                  <div className="evidence-taxonomy">
+                    {evidenceTierLabel && <span className={`evidence-tier-badge is-${item.evidence_tier}`}>{evidenceTierLabel}</span>}
+                    {item.institution && <span className="evidence-institution"><University size={13} />{item.institution}</span>}
+                    {item.relevance_basis === 'article_text' && <span className="relevance-badge is-direct">正文提及所问条号</span>}
+                    {item.relevance_basis === 'topic_paper' && <span className="relevance-badge is-topic">主题相关论文</span>}
+                  </div>
+                )}
+                {isTextbook && selected ? (
+                  <div className="textbook-location" aria-label="教材原文定位">
+                    <div className="textbook-location-heading"><MapPin size={15} /><strong>教材原文定位</strong><span>OCR 原文</span></div>
+                    <dl>
+                      <div><dt>教材名称</dt><dd>{item.document_title}</dd></div>
+                      <div><dt>原文位置</dt><dd>{item.article_label}</dd></div>
+                    </dl>
+                    <p>以下为该页提取的对应段落，可能有个别错字；正式引用前请核对纸书。</p>
+                  </div>
+                ) : (
+                  <div className="section-path">{item.provider === 'deepseek_web' && <Globe size={12} />}{item.section_path.join(' / ') || (item.provider === 'pkulaw' ? '北大法宝 MCP 实时证据' : '正文')}</div>
+                )}
+                <div className={`legal-original ${!selected ? 'is-preview' : ''}`} aria-label={isTextbook ? '教材 OCR 原文' : undefined}>
                   {item.text.split('\n').map((paragraph, index) => <p key={index}>{paragraph}</p>)}
                 </div>
+                {item.relevance_basis === 'topic_paper' && <div className="evidence-topic-warning">该资料用于主题研究，不作为所问条号的逐条释义依据。</div>}
                 {selected && (
                   <div className="evidence-detail">
                     <dl className="source-metadata">
-                      <div><dt>效力</dt><dd><span className="status-dot" />{item.status || '以来源为准'}</dd></div>
+                      <div><dt>{item.provider === 'deepseek_web' ? '资料状态' : '效力'}</dt><dd><span className="status-dot" />{item.status || '以来源为准'}</dd></div>
                       {item.effect_level && <div><dt>效力级别</dt><dd>{item.effect_level}</dd></div>}
-                      <div><dt>公布日期</dt><dd>{item.published_at || '以来源为准'}</dd></div>
-                      <div><dt>施行日期</dt><dd>{item.effective_at || '以来源为准'}</dd></div>
+                      <div><dt>发布日期</dt><dd>{item.published_at || '以来源为准'}</dd></div>
+                      {item.provider !== 'deepseek_web' && <div><dt>施行日期</dt><dd>{item.effective_at || '以来源为准'}</dd></div>}
                       <div><dt>来源</dt><dd>{item.source_name}</dd></div>
                     </dl>
+                    {item.web_query && <div className="web-query">检索词：{item.web_query}</div>}
                     {item.snapshot_sha256 && <div className="hash-line" title={item.snapshot_sha256}>
-                      <Fingerprint size={14} />原文快照 {item.snapshot_sha256.slice(0, 12)}…
+                      <Fingerprint size={14} />{item.provider === 'deepseek_web' ? '正文 SHA-256' : '原文快照'} {item.snapshot_sha256.slice(0, 12)}…
                     </div>}
                     <div className="evidence-actions">
                       <button type="button" className="text-action" onClick={() => onCopy(item)}><Copy size={15} />复制原文</button>
-                      {item.source_url && <a className="text-action" href={item.source_url} target="_blank" rel="noreferrer">{item.provider === 'pkulaw' ? '法宝原文' : '官方来源'}<ExternalLink size={14} /></a>}
+                      {item.source_url && <a className="text-action" href={item.source_url} target="_blank" rel="noreferrer">{item.provider === 'pkulaw' ? '法宝原文' : item.provider === 'deepseek_web' ? '打开网页' : '官方来源'}<ExternalLink size={14} /></a>}
                     </div>
                   </div>
                 )}
               </article>
             )
           })}
-          <div className="source-notice"><Check size={14} />{evidence[0].source_notice}</div>
+          {[...new Set(evidence.map((item) => item.source_notice))].map((notice) => <div className="source-notice" key={notice}><Check size={14} />{notice}</div>)}
         </div>
       )}
     </section>

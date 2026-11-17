@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
-import { CheckCircle2, Database, KeyRound, X, XCircle } from 'lucide-react'
+import { CheckCircle2, Database, Globe, KeyRound, X, XCircle } from 'lucide-react'
 import type { Health, ProviderStatus } from '@/types/legal'
 
 interface ModelDialogProps {
@@ -144,6 +144,17 @@ export function ModelDialog({ health, provider, onClose }: ModelDialogProps) {
         <h3>DeepSeek 配置</h3>
         <p>在项目根目录的 `.env` 中设置后重新启动：</p>
         <code>DEEPSEEK_API_KEY=你的密钥</code>
+        <div className="provider-dialog-section">
+          <h3><Globe size={16} />DeepSeek 联网搜索</h3>
+          <div className={`model-connection ${health?.web_search_configured ? 'is-connected' : ''}`}>
+            {health?.web_search_configured ? <CheckCircle2 size={18} /> : <XCircle size={18} />}
+            <div>
+              <strong>{health?.web_search_configured ? '官方搜索与网页读取已配置' : '尚未配置联网工具'}</strong>
+              <p>与对话共用同一官方 API Key；搜索和网页读取会按成功调用次数计费。</p>
+            </div>
+          </div>
+          <p className="dialog-note">只有成功抓取正文的网页才进入证据包。公开观点不等同于法律原文，媒体转述也不会被标成教授原话。</p>
+        </div>
         <div className="provider-dialog-section">
           <h3><Database size={16} />北大法宝 MCP</h3>
           <div className={`model-connection ${provider?.configured ? 'is-connected' : ''}`}>

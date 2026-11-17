@@ -9,11 +9,18 @@ class LegalStoreTest(unittest.TestCase):
     def setUpClass(cls):
         cls.store = LegalStore()
 
-    def test_official_document_is_complete(self):
-        self.assertEqual(len(self.store.documents), 1)
-        self.assertEqual(self.store.documents[0]["article_count"], 1260)
-        self.assertEqual(self.store.documents[0]["status"], "有效")
-        self.assertEqual(len(self.store.articles), 1260)
+    def test_official_documents_are_complete(self):
+        expected = {
+            "civil-code": 1260,
+            "criminal-law": 505,
+            "civil-procedure-law": 306,
+            "criminal-procedure-law": 308,
+            "civil-procedure-interpretation": 550,
+            "criminal-procedure-interpretation": 655,
+        }
+        self.assertEqual({item["document_id"]: item["article_count"] for item in self.store.documents}, expected)
+        self.assertTrue(all(item["status"] == "有效" for item in self.store.documents))
+        self.assertEqual(len(self.store.articles), 3584)
 
     def test_chinese_article_numbers(self):
         self.assertEqual(chinese_number_to_int("一千一百六十五"), 1165)
@@ -50,10 +57,10 @@ class LegalStoreTest(unittest.TestCase):
         answer = "根据所引条文，行为人因过错侵害他人民事权益并造成损害时，应当承担侵权责任。【证据1】"
         self.assertTrue(verify_answer(answer, evidence)["passed"])
 
-    def test_answer_verifier_rejects_external_article(self):
+    def test_answer_verifier_allows_general_legal_knowledge_outside_evidence(self):
         evidence = self.store.search("第1165条")
         answer = "第1165条规定一般过错责任，而第1077条另外规定了离婚冷静期。【证据1】"
-        self.assertFalse(verify_answer(answer, evidence)["passed"])
+        self.assertTrue(verify_answer(answer, evidence)["passed"])
 
 
 if __name__ == "__main__":

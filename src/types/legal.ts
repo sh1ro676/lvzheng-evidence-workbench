@@ -7,7 +7,9 @@ export type AnswerStatus =
   | 'source_unavailable'
   | 'error'
 
-export type MatchType = 'exact' | 'hybrid' | 'keyword' | 'semantic'
+export type MatchType = 'exact' | 'hybrid' | 'keyword' | 'semantic' | 'web' | 'textbook'
+
+export type EvidenceTier = 'primary' | 'reliable_report' | 'secondary_unverified'
 
 export interface Evidence {
   citation_id: number
@@ -18,7 +20,10 @@ export interface Evidence {
   section_path: string[]
   text: string
   content_hash: string
-  provider?: 'pkulaw'
+  provider?: 'pkulaw' | 'deepseek_web' | 'textbook'
+  evidence_tier?: EvidenceTier
+  evidence_tier_label?: string
+  attribution_scope?: string
   source_name: string
   source_url: string
   snapshot_sha256: string
@@ -30,6 +35,13 @@ export interface Evidence {
   match_type: MatchType
   relevance: number
   queried_at?: string
+  web_query?: string
+  relevance_basis?: 'article_text' | 'topic_paper' | 'case_topic_and_opinion_text'
+  institution?: string
+  entity?: string
+  entities?: string[]
+  retrieval_round?: 'first' | 'second'
+  query_source?: 'case_base_query' | 'first_round_entity'
 }
 
 export interface VerificationCheck {
@@ -43,6 +55,52 @@ export interface Verification {
   checks: VerificationCheck[]
 }
 
+export interface WebSearchEvent {
+  stage: 'plan' | 'search' | 'candidate' | 'retry' | 'fetch' | 'filter' | 'evidence' | 'entity' | 'second_round'
+  ok: boolean
+  query?: string
+  url?: string
+  title?: string
+  result_count?: number
+  error?: string
+  reason?: string
+  institution?: string
+  entity?: string
+  round?: 'first' | 'second'
+  query_source?: string
+}
+
+export interface WebSearchInfo {
+  enabled: boolean
+  provider: 'deepseek_web'
+  configured: boolean
+  queries: string[]
+  search_count: number
+  candidate_count?: number
+  fetch_attempt_count?: number
+  content_fetched_count?: number
+  rejected_count?: number
+  fetched_count: number
+  events: WebSearchEvent[]
+  queried_at: string
+  mode?: 'four_institutions' | 'general'
+  fallback_general?: boolean
+  institution_results?: {
+    institution: string
+    found: boolean
+    search_count?: number
+    candidate_count?: number
+    content_fetched_count?: number
+    rejected_count?: number
+    entities?: string[]
+    second_round?: boolean
+    second_round_entity?: string
+    reason?: string
+  }[]
+  fallback_query?: boolean
+  notice?: string
+}
+
 export interface RetrievalInfo {
   source: 'local_official' | 'pkulaw' | 'none'
   provider: 'flk' | 'pkulaw' | null
@@ -52,6 +110,7 @@ export interface RetrievalInfo {
   queried_at?: string
   notice?: string
   error?: string
+  web_search?: WebSearchInfo
 }
 
 export interface ChatResponse {
@@ -60,6 +119,8 @@ export interface ChatResponse {
   evidence: Evidence[]
   verification: Verification
   retrieval?: RetrievalInfo
+  /** 是否还需要后台补充四校观点；案件不进入二次重写。 */
+  followup?: 'schools' | null
 }
 
 export interface ChatMessage {
@@ -70,6 +131,23 @@ export interface ChatMessage {
   evidence?: Evidence[]
   verification?: Verification
   retrieval?: RetrievalInfo
+  /** 第二段（四校观点）还在后台检索中 */
+  following?: boolean
+  /** 四校观点这一段的说明，例如未命中的原因 */
+  schoolNotice?: string
+  schoolRetrieval?: WebSearchInfo
+}
+
+export interface SchoolResponse {
+  status: AnswerStatus
+  section: string
+  /** 四校观点 / 案件讲解 */
+  section_title?: string
+  /** true 表示用这一节整体替换第一段的回答（案件类重写） */
+  replace?: boolean
+  verification?: Verification | null
+  evidence: Evidence[]
+  retrieval?: { web_search?: WebSearchInfo }
 }
 
 export interface LegalDocument {
@@ -103,4 +181,5 @@ export interface Health {
   document_count: number
   article_count: number
   pkulaw_configured: boolean
+  web_search_configured: boolean
 }
