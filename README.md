@@ -103,6 +103,8 @@ npm run ingest
 
 ## 验证
 
+GitHub Actions 自动执行后端、前端和浏览器验收，日志与浏览器截图／轨迹关联到具体提交；真实 API 验收、旧新版配对与独立质量核验见 [验收与审核说明](docs/verification.md)。CI 使用固定资料，不会自动调用付费服务。
+
 ```bash
 npm run test:backend
 npm run test:frontend

@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "ingest": "python backend/ingest_flk.py",
     "test:backend": "python -m unittest discover -s backend -p test_*.py -v",
-    "test:frontend": "node --test tests/*.test.mjs"
+    "test:frontend": "node --test tests/*.test.mjs",
+    "browser:install": "node node_modules/playwright-core/cli.js install --with-deps chromium",
+    "test:browser": "node scripts/validate-conversation-browser.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
