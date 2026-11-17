@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Lock
 
 from deepseek_client import (CASE_SYSTEM_PROMPT, DeepSeekClient, DeepSeekError,
                              repair_unverified_quotes, verify_answer)
@@ -15,8 +17,14 @@ from legal_store import (ARTICLE_KEY_RE, ARTICLE_QUERY_RE, LegalStore,
                          chinese_number_to_int, normalize_article_refs)
 from pkulaw_mcp import PkulawError, PkulawProvider, extract_law_title
 from web_search_client import DeepSeekWebClient, WebSearchError, normalize_web_evidence, utc_now
+from conversation import normalize_history
+from retrieval_tasks import parallel_calls, timed_call
 
 ROOT = Path(__file__).resolve().parent
+RETRIEVAL_TIMEOUT = 150.0
+INSTITUTION_TIMEOUT = 100.0
+FETCH_TIMEOUT = 45.0
+SCHOOL_TIMEOUT = 150.0
 CRIMINAL_QUERY_RE = re.compile(r"判刑|量刑|偷盗|盗窃|强奸|犯罪|刑事责任|数罪并罚|有期徒刑|死刑|罚金|罪名|刑事拘留|缓刑")
 CIVIL_QUERY_RE = re.compile(r"民法|民事|侵权|合同|婚姻|离婚|继承|监护|收养")
 PROFESSOR_QUERY_RE = re.compile(r"教授|高校|老师|教师|学者|观点|学说|四校|法学院")
@@ -252,13 +260,11 @@ def retrieve_textbook_evidence(question: str, evidence: list[dict] | None = None
     return out
 
 
-def _settle(future, label: str, timeout: float = 150) -> tuple[list[dict], dict]:
-    """等一个检索任务，超时或异常都返回空结果并记录原因，绝不让第二段永远挂着。"""
-    try:
-        return future.result(timeout=timeout)
-    except Exception as error:  # noqa: BLE001
-        return [], {"enabled": True, "failure": f"{label}超时或失败：{error}",
+def retrieval_result(result, label: str) -> tuple[list[dict], dict]:
+    if isinstance(result, Exception):
+        return [], {"enabled": True, "failure": f"{label}超时或失败：{result}",
                     "notice": f"{label}超时或失败，本次未纳入该部分资料"}
+    return result
 
 
 def dedupe_evidence(evidence: list[dict]) -> list[dict]:
@@ -286,6 +292,12 @@ def evidence_covers(evidence: list[dict], numbers: list[int]) -> bool:
 
 
 _PLAN_CACHE: dict[str, tuple[dict, float]] = {}
+_PLAN_CACHE_LOCK = Lock()
+
+
+def plan_cache_key(question: str, history: list[dict] | None = None) -> str:
+    payload = json.dumps([question, normalize_history(history)], ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def fallback_plan(question: str) -> dict:
@@ -303,28 +315,37 @@ def fallback_plan(question: str) -> dict:
     }
 
 
-def route_question(question: str) -> dict:
+def route_question(question: str, history: list[dict] | None = None) -> dict:
     """第一环：模型决定查哪里。失败就用规则，绝不因为调度失败而卡住。"""
     plan = None
     if DEEPSEEK.configured:
         try:
-            plan = DEEPSEEK.plan_route(question)
+            plan = DEEPSEEK.plan_route(question, **({"history": history} if history else {}))
         except Exception as error:  # noqa: BLE001
             plan = None
     if not plan:
-        plan = fallback_plan(question)
+        context = " ".join(item["content"] for item in (history or []) if item["role"] == "user")
+        budget = 2000 - len(question) - 20
+        resolved = f"此前问题：{context[-budget:]}\n当前追问：{question}" if context and budget > 0 else question
+        plan = fallback_plan(resolved)
+        plan["resolved_question"] = resolved[:2000]
     if not plan.get("textbook_query"):
         plan["textbook_query"] = case_topic_hint(question)
-    _PLAN_CACHE[question] = (plan, time.time())
+    plan.setdefault("resolved_question", question)
+    with _PLAN_CACHE_LOCK:
+        if len(_PLAN_CACHE) >= 256:
+            _PLAN_CACHE.pop(next(iter(_PLAN_CACHE)), None)
+        _PLAN_CACHE[plan_cache_key(question, history)] = (plan, time.time())
     return plan
 
 
-def _plan_for(question: str, plan_id: str | None = None) -> dict:
+def _plan_for(question: str, history: list[dict] | None = None) -> dict:
     """同一个问题的第二段复用第一环的调度结果，避免再调一次模型。"""
-    cached = _PLAN_CACHE.get(question)
+    with _PLAN_CACHE_LOCK:
+        cached = _PLAN_CACHE.get(plan_cache_key(question, history))
     if cached and time.time() - cached[1] < 3600:
         return cached[0]
-    return route_question(question)
+    return route_question(question, **({"history": history} if history else {}))
 
 
 def evidence_by_plan(question: str, plan: dict) -> tuple[list[dict], dict]:
@@ -397,8 +418,6 @@ def case_articles(question: str, evidence: list[dict], limit: int = 3) -> list[d
     if not selected:
         return []
 
-    from concurrent.futures import ThreadPoolExecutor
-
     def _retrieve(article: str) -> list[dict]:
         try:
             result = PKULAW.search(f"《中华人民共和国刑法》第{article}条")
@@ -407,10 +426,9 @@ def case_articles(question: str, evidence: list[dict], limit: int = 3) -> list[d
         return [item for item in result.get("evidence", [])[:1]
                 if evidence_covers([item], [int(article.split("-")[0])])]
 
-    # pool.map 按输入顺序返回；单个条号失败不会拖掉其他有效条文。
-    with ThreadPoolExecutor(max_workers=min(3, len(selected))) as pool:
-        batches = list(pool.map(_retrieve, selected))
-    return [item for batch in batches for item in batch]
+    batches = parallel_calls([lambda article=article: _retrieve(article) for article in selected],
+                             timeout=FETCH_TIMEOUT, max_workers=3)
+    return [item for batch in batches if not isinstance(batch, Exception) for item in batch]
 
 
 def retrieve_evidence(question: str, document_id: str | None = None, source: str = "auto") -> tuple[list[dict], dict]:
@@ -920,8 +938,6 @@ def fetch_candidates(candidates: list[tuple[dict, str]], info: dict, institution
 
     # 逐条串行抓取时，每个页面要等 2–5 秒，十个候选就是半分钟。
     # 这里并发抓取、串行判定：顺序和日志不变，墙钟时间降到最慢那一条。
-    from concurrent.futures import ThreadPoolExecutor
-
     def _fetch(pair: tuple[dict, str]):
         search_item, query = pair
         url = str(search_item["url"])
@@ -930,11 +946,10 @@ def fetch_candidates(candidates: list[tuple[dict, str]], info: dict, institution
         except WebSearchError as error:
             return pair, None, error
 
-    if batch:
-        with ThreadPoolExecutor(max_workers=min(len(batch), 8)) as pool:
-            fetched_results = list(pool.map(_fetch, batch))
-    else:
-        fetched_results = []
+    outcomes = parallel_calls([lambda pair=pair: _fetch(pair) for pair in batch],
+                              timeout=FETCH_TIMEOUT, max_workers=8)
+    fetched_results = [(pair, None, result) if isinstance(result, Exception) else result
+                       for pair, result in zip(batch, outcomes)]
 
     for (search_item, query), fetched, error in fetched_results:
         url = str(search_item["url"])
@@ -1132,7 +1147,7 @@ def _merge_institution_info(info: dict, institution: str, evidence: list[dict], 
         "entities": local.get("entities", []),
         "second_round": local.get("second_round", False),
         "second_round_entity": local.get("second_round_entity", ""),
-        **({} if evidence else {"reason": empty_reason}),
+        **({} if evidence else {"reason": local.get("failure") or empty_reason}),
     })
 
 
@@ -1168,8 +1183,6 @@ def retrieve_web_evidence(question: str, enabled: bool = True,
     if targeted:
         info["institution_results"] = []
         case_query = bool(CASE_QUERY_RE.search(question))
-        from concurrent.futures import ThreadPoolExecutor
-
         # 路由已有案件搜索词时直接复用；法条论文检索仍保留主题规划。
         if initial_query and initial_query.strip():
             base_query = initial_query.strip()[:300]
@@ -1179,21 +1192,22 @@ def retrieve_web_evidence(question: str, enabled: bool = True,
             base_queries = plan_queries(question, info)
             base_query = base_queries[0] if base_queries else question
         results: dict[str, tuple[list[dict], dict]] = {}
-        with ThreadPoolExecutor(max_workers=len(TARGET_INSTITUTIONS)) as pool:
-            futures = {
-                pool.submit(_search_one_institution, question, institution, base_query,
-                            3 if case_query else 8): institution
-                for institution in TARGET_INSTITUTIONS
-            }
-            for future, institution in futures.items():
-                try:
-                    results[institution] = future.result(timeout=100)
-                except Exception as error:  # noqa: BLE001
-                    results[institution] = ([], {"queries": [], "search_count": 0, "candidate_count": 0,
-                                                 "fetch_attempt_count": 0, "content_fetched_count": 0,
-                                                 "rejected_count": 0,
-                                                 "events": [{"stage": "error", "ok": False,
-                                                             "error": f"单校检索超时或失败：{error}"}]})
+        outcomes = parallel_calls([
+            lambda institution=institution: _search_one_institution(
+                question, institution, base_query, 3 if case_query else 8)
+            for institution in TARGET_INSTITUTIONS
+        ], timeout=INSTITUTION_TIMEOUT, max_workers=len(TARGET_INSTITUTIONS))
+        for institution, result in zip(TARGET_INSTITUTIONS, outcomes):
+            if isinstance(result, Exception):
+                results[institution] = ([], {
+                    "queries": [], "search_count": 0, "candidate_count": 0,
+                    "fetch_attempt_count": 0, "content_fetched_count": 0,
+                    "rejected_count": 0, "failure": str(result),
+                    "events": [{"stage": "filter", "ok": False,
+                                "error": f"单校检索超时或失败：{result}"}],
+                })
+            else:
+                results[institution] = result
         for institution in TARGET_INSTITUTIONS:
             institution_evidence, local_info = results[institution]
             evidence.extend(institution_evidence)
@@ -1223,7 +1237,8 @@ def retrieve_web_evidence(question: str, enabled: bool = True,
     return evidence, info
 
 
-def response_payload(question: str, evidence: list[dict], system_prompt: str | None = None) -> dict:
+def response_payload(question: str, evidence: list[dict], system_prompt: str | None = None,
+                     history: list[dict] | None = None) -> dict:
     """生成通用 Agent 回答；资料与校验用于增强，不再决定模型能否作答。"""
     numbered = numbered_evidence(evidence)
     if not DEEPSEEK.configured:
@@ -1234,7 +1249,8 @@ def response_payload(question: str, evidence: list[dict], system_prompt: str | N
             "verification": {"passed": False, "checks": [{"name": "模型配置", "passed": False, "detail": "未配置 DEEPSEEK_API_KEY"}]},
         }
     try:
-        answer = DEEPSEEK.generate(question, evidence, system_prompt=system_prompt)
+        context = {"history": history} if history else {}
+        answer = DEEPSEEK.generate(question, evidence, system_prompt=system_prompt, **context)
         verification = verify_answer(answer, evidence)
         attempts = 1
         if not verification["passed"]:
@@ -1246,7 +1262,7 @@ def response_payload(question: str, evidence: list[dict], system_prompt: str | N
                 failed_checks.append("无法匹配的长引文请改为不带引号的概括，或注明出处尚未核验。")
             answer = DEEPSEEK.generate(
                 question, evidence, correction_notes=failed_checks,
-                previous_answer=answer, system_prompt=system_prompt,
+                previous_answer=answer, system_prompt=system_prompt, **context,
             )
             verification = verify_answer(answer, evidence)
             attempts = 2
@@ -1264,6 +1280,43 @@ def response_payload(question: str, evidence: list[dict], system_prompt: str | N
             "evidence": numbered,
             "verification": {"passed": False, "checks": [{"name": "模型调用", "passed": False, "detail": str(error)}]},
         }
+
+
+def school_payload(question: str, history: list[dict] | None = None) -> dict:
+    context = {"history": history} if history else {}
+    plan = _plan_for(question, **context)
+    search_question = plan.get("resolved_question") or question
+    is_case = plan.get("kind") == "case"
+    # 所有法律问题都可补充四校专业讲评，不再受路由模型的布尔标记限制。
+    # 案件保留原问题中的案件名，并复用路由搜索词，避免再次规划。
+    evidence, info = retrieve_web_evidence(
+        search_question, True, force_targeted=True,
+        initial_query=(plan.get("web_query") or search_question) if is_case else None,
+    )
+    section = ""
+    verification = None
+    section_status = "insufficient_evidence"
+    numbered = numbered_evidence(evidence)
+    if evidence and DEEPSEEK.configured:
+        try:
+            generated = response_payload(
+                question, evidence, system_prompt=SCHOOL_SECTION_PROMPT, **context,
+            )
+            section = generated["answer"]
+            verification = generated["verification"]
+            section_status = generated["status"]
+            numbered = generated["evidence"]
+        except Exception as error:  # noqa: BLE001
+            info["generation_error"] = str(error)
+    return {
+        "status": section_status,
+        "replace": False,
+        "section_title": "四校教授观点",
+        "section": section,
+        "verification": verification,
+        "evidence": numbered,
+        "retrieval": {"web_search": info, "plan": plan},
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1285,9 +1338,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0 or length > 65536:
+        if length <= 0 or length > 262144:
             raise ValueError("请求体为空或过大")
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        data = json.loads(self.rfile.read(length).decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("请求体必须是 JSON 对象")
+        data["history"] = normalize_history(data.get("history"))
+        return data
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
@@ -1345,38 +1402,21 @@ class Handler(BaseHTTPRequestHandler):
             if not question:
                 self.send_json({"error": "问题不能为空"}, 400)
                 return
-            plan = _plan_for(question)
-            is_case = plan.get("kind") == "case"
-            # 所有法律问题都可补充四校专业讲评，不再受路由模型的布尔标记限制。
-            # 案件保留原问题中的案件名，并复用路由搜索词，避免再次规划。
-            evidence, info = retrieve_web_evidence(
-                question, True, force_targeted=True,
-                initial_query=(plan.get("web_query") or question) if is_case else None,
-            )
-            section = ""
-            verification = None
-            section_status = "insufficient_evidence"
-            numbered = numbered_evidence(evidence)
-            if evidence and DEEPSEEK.configured:
-                try:
-                    generated = response_payload(
-                        question, evidence, system_prompt=SCHOOL_SECTION_PROMPT,
-                    )
-                    section = generated["answer"]
-                    verification = generated["verification"]
-                    section_status = generated["status"]
-                    numbered = generated["evidence"]
-                except Exception as error:  # noqa: BLE001
-                    info["generation_error"] = str(error)
-            self.send_json({
-                "status": section_status,
-                "replace": False,
-                "section_title": "四校教授观点",
-                "section": section,
-                "verification": verification,
-                "evidence": numbered,
-                "retrieval": {"web_search": info, "plan": plan},
-            })
+            if len(question) > 2000:
+                self.send_json({"error": "单次任务不能超过 2000 字"}, 400)
+                return
+            try:
+                payload = timed_call(lambda: school_payload(question, data["history"]), SCHOOL_TIMEOUT)
+            except TimeoutError:
+                payload = {
+                    "status": "source_unavailable", "replace": False,
+                    "section_title": "四校教授观点", "section": "", "evidence": [],
+                    "verification": {"passed": False, "checks": [{
+                        "name": "四校补充完成", "passed": False,
+                        "detail": "四校补充超时，已停止等待；主回答保留，可稍后重试",
+                    }]},
+                }
+            self.send_json(payload)
         except (ValueError, json.JSONDecodeError) as error:
             self.send_json({"error": f"请求格式错误：{error}"}, 400)
         except Exception as error:  # noqa: BLE001
@@ -1426,36 +1466,36 @@ class Handler(BaseHTTPRequestHandler):
             return {**retrieval, "timings_ms": dict(timings)}
 
         _stage("planning")
-        plan = route_question(question)
+        context = {"history": data["history"]} if data["history"] else {}
+        plan = route_question(question, **context)
+        search_question = plan.get("resolved_question") or question
         timings["routing"] = _elapsed_ms()
         is_case = plan.get("kind") == "case"
         _stage("retrieving")
 
         if is_case and web_enabled:
             # 两路检索互不依赖，并行执行；网页查询复用路由结果，不再规划第二次。
-            from concurrent.futures import ThreadPoolExecutor
-
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                future_base = pool.submit(evidence_by_plan, question, plan)
-                future_web = pool.submit(
-                    retrieve_web_evidence, question, True, False,
-                    plan.get("web_query") or question,
-                )
-                evidence, retrieval = _settle(future_base, "法条与教材检索")
-                web_evidence, web_info = _settle(future_web, "公开网页检索")
+            outcomes = parallel_calls([
+                lambda: evidence_by_plan(search_question, plan),
+                lambda: retrieve_web_evidence(search_question, True, False,
+                                             plan.get("web_query") or search_question),
+            ], timeout=RETRIEVAL_TIMEOUT, max_workers=2)
+            evidence, retrieval = retrieval_result(outcomes[0], "法条与教材检索")
+            web_evidence, web_info = retrieval_result(outcomes[1], "公开网页检索")
             retrieval.setdefault("source", "none")
             retrieval.setdefault("provider", None)
         else:
-            try:
-                evidence, retrieval = evidence_by_plan(question, plan)
-            except PkulawError as error:
-                evidence, retrieval = [], {"source": "none", "provider": None, "error": str(error)}
+            outcome = parallel_calls([lambda: evidence_by_plan(search_question, plan)],
+                                     timeout=RETRIEVAL_TIMEOUT)[0]
+            evidence, retrieval = retrieval_result(outcome, "法条与教材检索")
+            retrieval.setdefault("source", "none")
+            retrieval.setdefault("provider", None)
             web_evidence, web_info = [], {}
         timings["retrieval"] = _elapsed_ms()
 
         if is_case and web_enabled:
             _stage("supplementing")
-            laws = case_articles(question, web_evidence or evidence)
+            laws = case_articles(search_question, web_evidence or evidence)
             evidence = dedupe_evidence(laws + evidence + web_evidence)
             retrieval["web_search"] = web_info
             notices = [value for value in (retrieval.get("notice"), web_info.get("notice")) if value]
@@ -1470,13 +1510,13 @@ class Handler(BaseHTTPRequestHandler):
         _stage("generating")
 
         if not DEEPSEEK.configured:
-            payload = response_payload(question, evidence, system_prompt=system_prompt)
+            payload = response_payload(question, evidence, system_prompt=system_prompt, **context)
             self._sse({"done": True, **payload, "retrieval": _timed_retrieval(), "followup": followup})
             return
 
         chunks: list[str] = []
         try:
-            for delta in DEEPSEEK.generate_stream(question, numbered, system_prompt=system_prompt):
+            for delta in DEEPSEEK.generate_stream(question, numbered, system_prompt=system_prompt, **context):
                 if "first_token" not in timings:
                     timings["first_token"] = _elapsed_ms()
                 chunks.append(delta)
@@ -1489,7 +1529,7 @@ class Handler(BaseHTTPRequestHandler):
 
         answer = "".join(chunks).strip()
         if not answer:
-            payload = response_payload(question, evidence, system_prompt=system_prompt)
+            payload = response_payload(question, evidence, system_prompt=system_prompt, **context)
             self._sse({"done": True, **payload, "retrieval": _timed_retrieval(), "followup": followup})
             return
         _stage("verifying")
@@ -1514,7 +1554,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     retry = DEEPSEEK.generate(
                         question, numbered, correction_notes=failed,
-                        previous_answer=answer, system_prompt=system_prompt,
+                        previous_answer=answer, system_prompt=system_prompt, **context,
                     )
                     retry_verification = verify_answer(retry, numbered)
                     if retry and retry_verification["passed"]:
@@ -1550,18 +1590,26 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "单次任务不能超过 2000 字"}, 400)
                 return
             web_enabled = data.get("web_search", True) is not False
+            context = {"history": data["history"]} if data["history"] else {}
+            search_question = question
+            if context:
+                plan = route_question(question, **context)
+                search_question = plan.get("resolved_question") or question
             try:
-                evidence, retrieval = retrieve_evidence(question, document_id, source)
-            except PkulawError as error:
+                evidence, retrieval = timed_call(
+                    lambda: retrieve_evidence(search_question, document_id, source), RETRIEVAL_TIMEOUT)
+            except (PkulawError, TimeoutError) as error:
                 evidence = []
                 retrieval = {
                     "source": "none", "provider": None, "error": str(error),
                     "notice": f"北大法宝检索失败，仍将由模型结合其他资料回答：{error}",
                 }
-            textbook_evidence = retrieve_textbook_evidence(question, evidence)
+            textbook_evidence = retrieve_textbook_evidence(search_question, evidence)
             # 法条 + 教材已经能答"讲解"类问题；此时再跑全网检索，用户只会干等二十多秒。
             need_web = web_enabled and not (textbook_evidence and not WANTS_FRESH_WEB_RE.search(question))
-            web_evidence, web_info = retrieve_web_evidence(question, need_web)
+            outcome = parallel_calls([lambda: retrieve_web_evidence(search_question, need_web)],
+                                     timeout=RETRIEVAL_TIMEOUT)[0]
+            web_evidence, web_info = retrieval_result(outcome, "公开网页检索")
             if web_enabled and not need_web:
                 web_info["notice"] = "已命中法条与教材，本次未做全网检索（需要教授观点或最新资料请直接说明）"
             if textbook_evidence:
@@ -1580,7 +1628,7 @@ class Handler(BaseHTTPRequestHandler):
             retrieval["web_search"] = web_info
             notices = [value for value in [retrieval.get("notice"), web_info.get("notice")] if value]
             retrieval["notice"] = "；".join(dict.fromkeys(notices))
-            payload = response_payload(question, evidence)
+            payload = response_payload(question, evidence, **context)
             payload["retrieval"] = retrieval
             self.send_json(payload)
         except (ValueError, json.JSONDecodeError) as error:

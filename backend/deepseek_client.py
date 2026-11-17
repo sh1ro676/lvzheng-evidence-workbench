@@ -9,6 +9,8 @@ import urllib.error
 import urllib.request
 
 from legal_store import ARTICLE_QUERY_RE, chinese_number_to_int, normalize_text
+from conversation import HISTORY_RULE, normalize_history
+from retrieval_tasks import network_timeout
 
 
 def _norm(text: str) -> str:
@@ -65,7 +67,8 @@ class DeepSeekClient:
     def configured(self) -> bool:
         return bool(self.api_key)
 
-    def plan_route(self, question: str, timeout: float | None = None) -> dict:
+    def plan_route(self, question: str, timeout: float | None = None,
+                   history: list[dict] | None = None) -> dict:
         """第一环：让模型决定该用哪个数据源、查什么。
 
         非思考模型只输出一份小 JSON；思考模型的推理也计入 max_tokens，
@@ -85,6 +88,8 @@ class DeepSeekClient:
             '"need_web":true|false,'
             '"web_query":"需要联网时用的检索词；不需要就空串",'
             '"need_schools":true|false}\n'
+            '另加 "resolved_question"：结合此前对话，将当前追问改写为可独立检索的完整问题；'
+            '保留用户当前意图，不能凭空增加事实。没有上下文时原样使用用户问题。\n'
             "判断规则：\n"
             "- 点名条号或问某条规则 → statute，只需 law+article。\n"
             "- 问具体案件、新闻、判决结果 → case，need_web=true，web_query 写案件名+关键词。\n"
@@ -94,10 +99,11 @@ class DeepSeekClient:
         )
         body = {
             "model": self.model,
-            "messages": [{"role": "system", "content": instruction},
+            "messages": [{"role": "system", "content": instruction + "\n" + HISTORY_RULE},
+                         *normalize_history(history),
                          {"role": "user", "content": question[:1500]}],
             "temperature": 0.0,
-            "max_tokens": 4096 if thinking else 220,
+            "max_tokens": 4096 if thinking else 500,
             "response_format": {"type": "json_object"},
             "stream": False,
         }
@@ -108,7 +114,7 @@ class DeepSeekClient:
                      "Content-Type": "application/json"},
             method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=request_timeout) as response:
+            with urllib.request.urlopen(request, timeout=network_timeout(request_timeout)) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             content = payload["choices"][0]["message"]["content"]
         except urllib.error.HTTPError as error:
@@ -133,6 +139,7 @@ class DeepSeekClient:
             "need_web": bool(plan.get("need_web")),
             "web_query": str(plan.get("web_query") or "").strip(),
             "need_schools": bool(plan.get("need_schools")),
+            "resolved_question": str(plan.get("resolved_question") or question).strip()[:2000],
         }
 
     def plan_web_queries(self, question: str, institution: str | None = None) -> list[str]:
@@ -196,7 +203,7 @@ class DeepSeekClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=network_timeout(60)) as response:
                 result = json.loads(response.read().decode("utf-8"))
             calls = result["choices"][0]["message"].get("tool_calls") or []
         except urllib.error.HTTPError as error:
@@ -222,7 +229,7 @@ class DeepSeekClient:
         return queries
 
     def _messages(self, question: str, evidence: list[dict], system_prompt: str | None,
-                  plain: bool = False) -> tuple[list[dict], str]:
+                  plain: bool = False, history: list[dict] | None = None) -> tuple[list[dict], str]:
         def render_evidence(index: int, item: dict) -> str:
             is_web = item.get("provider") == "deepseek_web"
             source_type = ("公开网页正文" if is_web else
@@ -265,17 +272,21 @@ class DeepSeekClient:
             prompt += "\n" + json_instruction
         if SELF_CHECK not in prompt:
             prompt += "\n" + SELF_CHECK
+        prior = normalize_history(history)
+        if prior:
+            prompt += "\n" + HISTORY_RULE
         reference = evidence_text or "本次没有检索到可引用的外部资料。仍请完整回答用户；具体事实和现行法若无法确认，应自然说明不确定性。"
         messages = [{"role": "system", "content": prompt},
+                    *prior,
                     {"role": "user", "content": f"用户任务：{question}\n\n以下是本次检索到的参考资料（用于增强与核对，不是你的知识边界）：\n{reference}"}]
         return messages, evidence_text
 
     def generate_stream(self, question: str, evidence: list[dict],
-                        system_prompt: str | None = None):
+                        system_prompt: str | None = None, history: list[dict] | None = None):
         """流式生成：边生成边吐字，前端首字延迟从 6 秒降到 1 秒左右。"""
         if not self.configured:
             raise DeepSeekError("未配置 DEEPSEEK_API_KEY")
-        messages, _ = self._messages(question, evidence, system_prompt, plain=True)
+        messages, _ = self._messages(question, evidence, system_prompt, plain=True, history=history)
         body = {"model": self.model, "messages": messages, "temperature": 0.1,
                 "max_tokens": 5200, "stream": True}
         request = urllib.request.Request(
@@ -285,8 +296,9 @@ class DeepSeekClient:
                      "Content-Type": "application/json", "Accept": "text/event-stream"},
             method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=180) as response:
+            with urllib.request.urlopen(request, timeout=network_timeout(180)) as response:
                 for raw in response:
+                    network_timeout(180)
                     line = raw.decode("utf-8", "ignore").strip()
                     if not line.startswith("data:"):
                         continue
@@ -310,12 +322,12 @@ class DeepSeekClient:
             raise DeepSeekError(f"DeepSeek 流式调用失败：{error}") from error
 
     def generate(self, question: str, evidence: list[dict], correction_notes: list[str] | None = None,
-                 previous_answer: str | None = None, system_prompt: str | None = None) -> str:
+                 previous_answer: str | None = None, system_prompt: str | None = None,
+                 history: list[dict] | None = None) -> str:
         if not self.configured:
             raise DeepSeekError("未配置 DEEPSEEK_API_KEY")
-        messages, _ = self._messages(question, evidence, system_prompt)
-        system_prompt = messages[0]["content"]
-        user_prompt = messages[1]["content"]
+        messages, _ = self._messages(question, evidence, system_prompt, history=history)
+        user_prompt = messages[-1]["content"]
         if correction_notes:
             notes = "\n".join(f"- {note}" for note in correction_notes)
             if previous_answer:
@@ -325,12 +337,10 @@ class DeepSeekClient:
                 "只修复下列问题，保留其中有价值的背景、案情、推理和结论，不得为缩短篇幅而遗漏原任务的子问题。"
                 f"引用编号必须有效；使用检索资料时在相应句段标注，不要给每句话机械添加引用：\n{notes}"
             )
+        messages[-1]["content"] = user_prompt
         payload = json.dumps({
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            "messages": messages,
             "temperature": 0.1,
             "max_tokens": 5200,
             "stream": False,
@@ -346,7 +356,7 @@ class DeepSeekClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=100) as response:
+            with urllib.request.urlopen(request, timeout=network_timeout(100)) as response:
                 result = json.loads(response.read().decode("utf-8"))
             content = result["choices"][0]["message"]["content"]
         except urllib.error.HTTPError as error:

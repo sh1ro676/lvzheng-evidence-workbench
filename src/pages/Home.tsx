@@ -8,8 +8,9 @@ import { EvidencePanel } from '@/components/EvidencePanel'
 import { LibraryView } from '@/components/LibraryView'
 import { ModelDialog } from '@/components/ModelDialog'
 import { askLawStream, askSchools, getDocuments, getHealth, getProviders } from '@/lib/api'
+import { conversationHistory, mergeSchoolResponse } from '@/lib/conversation'
 import type { AgentStage } from '@/lib/api'
-import type { AnswerStatus, ChatMessage, Evidence, Health, LegalDocument, ProviderStatus, SchoolResponse } from '@/types/legal'
+import type { AnswerStatus, ChatMessage, Evidence, Health, LegalDocument, ProviderStatus } from '@/types/legal'
 import '../App.css'
 
 const examples = [
@@ -53,6 +54,14 @@ export default function Home() {
   const [toast, setToast] = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
   const inFlightRef = useRef(false)
+  const taskVersionRef = useRef(0)
+  const activeMessageIdRef = useRef<string | undefined>(undefined)
+  const requestControllers = useRef(new Set<AbortController>())
+
+  useEffect(() => {
+    const controllers = requestControllers.current
+    return () => controllers.forEach((controller) => controller.abort())
+  }, [])
   const pkulaw = providers.find((provider) => provider.provider === 'pkulaw')
 
   useEffect(() => {
@@ -78,6 +87,10 @@ export default function Home() {
   async function submitQuestion(value: string) {
     const question = value.trim()
     if (!question || inFlightRef.current) return
+    const taskVersion = taskVersionRef.current
+    const history = conversationHistory(messages)
+    const controller = new AbortController()
+    requestControllers.current.add(controller)
     inFlightRef.current = true
     setView('ask')
     setInput('')
@@ -85,21 +98,27 @@ export default function Home() {
     setStage('planning')
     setLoading(true)
     const assistantId = crypto.randomUUID()
+    activeMessageIdRef.current = assistantId
     try {
       // 先建立空回答，阶段事件显示检索进度，正文增量到达后直接流式渲染。
       setMessages((current) => [...current, {
         id: assistantId, role: 'assistant', content: '', following: false,
       }])
       const response = await askLawStream(question, (delta) => {
+        if (taskVersion !== taskVersionRef.current) return
         setMessages((current) => current.map((message) => message.id === assistantId
           ? { ...message, content: message.content + delta }
           : message))
       }, (replacement) => {
+        if (taskVersion !== taskVersionRef.current) return
         // 引用修正后整段覆盖，但不再用拦截说明替代回答。
         setMessages((current) => current.map((message) => message.id === assistantId
           ? { ...message, content: replacement }
           : message))
-      }, webSearch, setStage)
+      }, webSearch, (next) => {
+        if (taskVersion === taskVersionRef.current) setStage(next)
+      }, history, controller.signal)
+      if (taskVersion !== taskVersionRef.current) return
       setMessages((current) => current.map((message) => message.id === assistantId
         ? {
             ...message, content: response.answer || message.content,
@@ -114,68 +133,34 @@ export default function Home() {
 
       // 法条、学理与案件均在后台独立补充四校观点，不重写已完成的主回答。
       if (response.followup === 'schools') {
-        askSchools(question).then((school: SchoolResponse) => {
-          const offset = response.evidence.length
-          const schoolEvidence = school.evidence.map((item) => ({
-            ...item, citation_id: item.citation_id + offset,
-          }))
-          setMessages((current) => current.map((message) => {
-            if (message.id !== assistantId) return message
-            if (school.replace && school.section) {
-              return {
-                ...message,
-                following: false,
-                content: school.section,
-                status: school.status,
-                verification: school.verification ?? message.verification,
-                evidence: school.evidence,
-                schoolRetrieval: school.retrieval?.web_search,
-              }
-            }
-            if (school.replace && !school.section) {
-              return {
-                ...message,
-                following: false,
-                schoolNotice: '公开资料检索未获得可用内容，保留当前完整回答。',
-                schoolRetrieval: school.retrieval?.web_search,
-              }
-            }
-            const section = school.section
-              ? school.section.replace(/【证据(\d+)】/g, (_all: string, n: string) => `【证据${Number(n) + offset}】`)
-              : ''
-            const title = school.section_title || '四校教授观点'
-            const tail = section
-              ? `\n\n## ${title}\n\n${section}`
-              : `\n\n## ${title}\n\n本次未检索到可核验的四校公开观点，主回答保持不变。`
-            return {
-              ...message,
-              following: false,
-              content: message.content + tail,
-              evidence: [...(message.evidence ?? []), ...schoolEvidence],
-              schoolRetrieval: school.retrieval?.web_search,
-            }
-          }))
-          if (school.replace) {
-            setActiveEvidence(school.evidence)
-            setSelected(school.evidence[0])
-          } else if (schoolEvidence.length) {
-            setActiveEvidence((current) => [...current, ...schoolEvidence])
+        const schoolController = new AbortController()
+        requestControllers.current.add(schoolController)
+        askSchools(question, 180000, history, schoolController.signal).then((school) => {
+          if (taskVersion !== taskVersionRef.current) return
+          setMessages((current) => current.map((message) => message.id === assistantId
+            ? mergeSchoolResponse(message, school) : message))
+          // A late supplement belongs to its original answer, never to the next turn's evidence panel.
+          if (activeMessageIdRef.current === assistantId) {
+            const merged = mergeSchoolResponse({
+              ...response, id: assistantId, role: 'assistant', content: response.answer,
+            }, school)
+            setActiveEvidence(merged.evidence ?? [])
+            if (school.replace && school.section) setSelected(merged.evidence?.[0])
           }
         }).catch(() => {
-          setMessages((current) => current.map((message) => {
-            if (message.id !== assistantId) return message
-            // 第一段若是"正在检索"占位，失败时别把这句话留在页面上。
-            const placeholder = message.content.startsWith('正在检索')
-            return {
-              ...message,
-              following: false,
-              content: placeholder ? '未能获取该问题的公开资料，请稍后重试或换一种问法。' : message.content,
-              schoolNotice: '公开资料与四校观点检索失败或超时，可稍后重试。',
-            }
-          }))
-        })
+          if (taskVersion !== taskVersionRef.current) return
+          setMessages((current) => current.map((message) => message.id === assistantId
+            ? mergeSchoolResponse(message, {
+                status: 'source_unavailable', section: '', evidence: [],
+                verification: { passed: false, checks: [{
+                  name: '四校补充完成', passed: false,
+                  detail: '公开资料与四校观点检索失败或超时，可稍后重试。',
+                }] },
+              }) : message))
+        }).finally(() => requestControllers.current.delete(schoolController))
       }
     } catch (error) {
+      if (taskVersion !== taskVersionRef.current) return
       setLoading(false)
       const content = error instanceof Error ? error.message : '请求失败，请稍后重试。'
       setMessages((current) => {
@@ -190,11 +175,18 @@ export default function Home() {
       setActiveEvidence([])
       setSelected(undefined)
     } finally {
-      inFlightRef.current = false
+      requestControllers.current.delete(controller)
+      if (taskVersion === taskVersionRef.current) inFlightRef.current = false
     }
   }
 
   function newTask() {
+    taskVersionRef.current += 1
+    requestControllers.current.forEach((controller) => controller.abort())
+    requestControllers.current.clear()
+    activeMessageIdRef.current = undefined
+    inFlightRef.current = false
+    setLoading(false)
     setMessages([])
     setActiveEvidence([])
     setSelected(undefined)
@@ -202,10 +194,11 @@ export default function Home() {
     setView('ask')
   }
 
-  function showCitation(citationId: number, messageEvidence?: Evidence[]) {
+  function showCitation(citationId: number, messageEvidence?: Evidence[], messageId?: string) {
     const evidence = messageEvidence ?? activeEvidence
     const item = evidence.find((entry) => entry.citation_id === citationId)
     if (!item) return
+    activeMessageIdRef.current = messageId
     setActiveEvidence(evidence)
     setSelected(item)
     window.setTimeout(() => {
@@ -306,7 +299,7 @@ export default function Home() {
                               text={message.content}
                               evidence={message.evidence ?? []}
                               webSearch={message.schoolRetrieval ?? message.retrieval?.web_search}
-                              onCitation={(citationId) => showCitation(citationId, message.evidence ?? [])}
+                              onCitation={(citationId) => showCitation(citationId, message.evidence ?? [], message.id)}
                             />
                             {message.retrieval?.web_search?.enabled && (
                               <details className="verification-details web-search-details">

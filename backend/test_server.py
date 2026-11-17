@@ -3,7 +3,7 @@ import threading
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
-from unittest.mock import patch
+from unittest.mock import patch, PropertyMock
 
 import server
 from deepseek_client import CASE_SYSTEM_PROMPT, DeepSeekClient
@@ -44,7 +44,8 @@ class RetrievalRoutingTest(unittest.TestCase):
             "source_url": "", "section_path": [], "status": "现行有效",
             "published_at": "", "effective_at": "",
         }
-        with patch.object(server.PKULAW, "search", return_value={
+        with patch.object(type(server.PKULAW), "configured", new_callable=PropertyMock, return_value=True), \
+             patch.object(server.PKULAW, "search", return_value={
                 "evidence": [article], "strategy": "fatiao", "tool": "get_law_article",
                 "cached": False, "queried_at": "now", "notice": ""}), \
              patch.object(server.STORE, "search", return_value=[]) as local:
@@ -54,7 +55,8 @@ class RetrievalRoutingTest(unittest.TestCase):
         local.assert_not_called()
 
     def test_pkulaw_failure_does_not_fall_back_to_local_or_block_answer(self):
-        with patch.object(server.PKULAW, "search", side_effect=server.PkulawError("超时")), \
+        with patch.object(type(server.PKULAW), "configured", new_callable=PropertyMock, return_value=True), \
+             patch.object(server.PKULAW, "search", side_effect=server.PkulawError("超时")), \
              patch.object(server.STORE, "search", return_value=[]) as local:
             evidence, retrieval = server.retrieve_evidence("盗窃怎么判")
         self.assertEqual(evidence, [])

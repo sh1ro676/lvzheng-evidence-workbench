@@ -138,6 +138,11 @@ export interface ChatMessage {
   schoolRetrieval?: WebSearchInfo
 }
 
+export interface ChatTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 export interface SchoolResponse {
   status: AnswerStatus
   section: string

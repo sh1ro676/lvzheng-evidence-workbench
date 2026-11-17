@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from legal_store import ARTICLE_QUERY_RE, chinese_number_to_int
+from retrieval_tasks import network_timeout
 
 GATEWAY = "https://apim-gateway.pkulaw.com"
 ENDPOINTS = {
@@ -120,7 +121,7 @@ class PkulawMCPClient:
             headers=headers, method="POST",
         )
         try:
-            with self.opener(request, timeout=self.timeout) as response:
+            with self.opener(request, timeout=network_timeout(self.timeout)) as response:
                 body = response.read(8 * 1024 * 1024 + 1).decode("utf-8", errors="replace")
                 if len(body) > 8 * 1024 * 1024:
                     raise PkulawError("MCP 响应过大，已停止读取")

@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from retrieval_tasks import network_timeout
 
 
 class WebSearchError(RuntimeError):
@@ -73,7 +74,7 @@ class DeepSeekWebClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=network_timeout(self.timeout)) as response:
                 raw = response.read(2_000_001)
                 if len(raw) > 2_000_000:
                     raise WebSearchError("联网工具返回内容过大")
