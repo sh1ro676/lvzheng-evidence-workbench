@@ -349,6 +349,21 @@ class StreamPerformanceTest(unittest.TestCase):
         self.assertEqual(events[-1]["followup"], "schools",
                          "即使路由将 need_schools 设为 false，也必须追加四校讲评")
 
+    def test_non_case_web_request_is_honored_by_the_main_answer(self):
+        calls = []
+        client = StreamingClient("已核对最新法规资料。【证据1】")
+        plan = {"kind": "concept", "need_web": True, "web_query": "劳动合同 最新规定"}
+
+        def web_retrieval(question, enabled, targeted, initial_query):
+            calls.append((question, enabled, targeted, initial_query))
+            return EVIDENCE, {"enabled": True}
+
+        events = self._run_stream(client, plan, lambda *_args: ([], {}), web_retrieval)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][3], "劳动合同 最新规定")
+        self.assertEqual(events[-1]["evidence"][0]["text"], EVIDENCE[0]["text"])
+        self.assertTrue(events[-1]["retrieval"]["web_search"]["enabled"])
+
     def test_unverified_long_quote_is_repaired_without_full_regeneration(self):
         indirect = "这是一段并非证据原文而只是模型概括且长度超过二十个字的表述"
         client = StreamingClient(f"根据条文，有观点称“{indirect}”，仍应继续分析。【证据1】")

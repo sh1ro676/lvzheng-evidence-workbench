@@ -36,12 +36,20 @@ export interface Evidence {
   relevance: number
   queried_at?: string
   web_query?: string
-  relevance_basis?: 'article_text' | 'topic_paper' | 'case_topic_and_opinion_text'
+  relevance_basis?: 'article_text' | 'topic_paper' | 'topic_related' | 'case_topic_and_opinion_text'
+  identity_sources?: {
+    name: string
+    institution: string
+    source_url: string
+    document_title: string
+    excerpt: string
+    content_hash: string
+  }[]
   institution?: string
   entity?: string
   entities?: string[]
-  retrieval_round?: 'first' | 'second'
-  query_source?: 'case_base_query' | 'first_round_entity'
+  retrieval_round?: 'first' | 'second' | 'third'
+  query_source?: 'case_base_query' | 'first_round_entity' | 'identity_lookup' | 'topic_primary' | 'topic_variant'
 }
 
 export interface VerificationCheck {
@@ -66,7 +74,7 @@ export interface WebSearchEvent {
   reason?: string
   institution?: string
   entity?: string
-  round?: 'first' | 'second'
+  round?: 'first' | 'second' | 'third'
   query_source?: string
 }
 
@@ -95,6 +103,8 @@ export interface WebSearchInfo {
     entities?: string[]
     second_round?: boolean
     second_round_entity?: string
+    identity_source_count?: number
+    stop_reason?: string
     reason?: string
   }[]
   fallback_query?: boolean

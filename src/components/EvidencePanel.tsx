@@ -69,6 +69,7 @@ export function EvidencePanel({ evidence, selectedCitationId, onSelect, onCopy, 
                     {item.institution && <span className="evidence-institution"><University size={13} />{item.institution}</span>}
                     {item.relevance_basis === 'article_text' && <span className="relevance-badge is-direct">正文提及所问条号</span>}
                     {item.relevance_basis === 'topic_paper' && <span className="relevance-badge is-topic">主题相关论文</span>}
+                    {item.relevance_basis === 'topic_related' && <span className="relevance-badge is-topic">主题相关网页</span>}
                   </div>
                 )}
                 {isTextbook && selected ? (
@@ -86,7 +87,7 @@ export function EvidencePanel({ evidence, selectedCitationId, onSelect, onCopy, 
                 <div className={`legal-original ${!selected ? 'is-preview' : ''}`} aria-label={isTextbook ? '教材 OCR 原文' : undefined}>
                   {item.text.split('\n').map((paragraph, index) => <p key={index}>{paragraph}</p>)}
                 </div>
-                {item.relevance_basis === 'topic_paper' && <div className="evidence-topic-warning">该资料用于主题研究，不作为所问条号的逐条释义依据。</div>}
+                {(item.relevance_basis === 'topic_paper' || item.relevance_basis === 'topic_related') && <div className="evidence-topic-warning">该资料用于主题研究，不作为所问条号的逐条释义依据。</div>}
                 {selected && (
                   <div className="evidence-detail">
                     <dl className="source-metadata">
@@ -97,6 +98,16 @@ export function EvidencePanel({ evidence, selectedCitationId, onSelect, onCopy, 
                       <div><dt>来源</dt><dd>{item.source_name}</dd></div>
                     </dl>
                     {item.web_query && <div className="web-query">检索词：{item.web_query}</div>}
+                    {item.identity_sources?.map((identity) => (
+                      <div className="web-query" key={`${identity.name}-${identity.source_url}`}>
+                        <strong>身份核验：{identity.name} · {identity.institution}</strong>
+                        <p>{identity.excerpt}</p>
+                        <a className="text-action" href={identity.source_url} target="_blank" rel="noreferrer">
+                          {identity.document_title}<ExternalLink size={14} />
+                        </a>
+                        <p>此页仅核验任职关联，观点以本条正文为准。</p>
+                      </div>
+                    ))}
                     {item.snapshot_sha256 && <div className="hash-line" title={item.snapshot_sha256}>
                       <Fingerprint size={14} />{item.provider === 'deepseek_web' ? '正文 SHA-256' : '原文快照'} {item.snapshot_sha256.slice(0, 12)}…
                     </div>}

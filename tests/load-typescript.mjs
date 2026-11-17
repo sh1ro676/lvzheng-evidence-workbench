@@ -6,7 +6,10 @@ import ts from 'typescript'
 export async function loadTypescript(url) {
   const source = await readFile(url, 'utf8')
   const { outputText } = ts.transpileModule(source, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+    fileName: url.pathname,
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
   })
-  return import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
+  const resolved = outputText.replace(/from ["'](lucide-react|react\/jsx-runtime)["']/g,
+    (_match, name) => `from ${JSON.stringify(import.meta.resolve(name))}`)
+  return import(`data:text/javascript;base64,${Buffer.from(resolved).toString('base64')}`)
 }

@@ -25,6 +25,8 @@ RETRIEVAL_TIMEOUT = 150.0
 INSTITUTION_TIMEOUT = 100.0
 FETCH_TIMEOUT = 45.0
 SCHOOL_TIMEOUT = 150.0
+MAX_SCHOOL_SEARCHES = 3
+MAX_SCHOOL_FETCHES = 10
 CRIMINAL_QUERY_RE = re.compile(r"判刑|量刑|偷盗|盗窃|强奸|犯罪|刑事责任|数罪并罚|有期徒刑|死刑|罚金|罪名|刑事拘留|缓刑")
 CIVIL_QUERY_RE = re.compile(r"民法|民事|侵权|合同|婚姻|离婚|继承|监护|收养")
 PROFESSOR_QUERY_RE = re.compile(r"教授|高校|老师|教师|学者|观点|学说|四校|法学院")
@@ -608,7 +610,7 @@ def candidate_rank(item: dict, question: str) -> float:
         score += 0.4
     if re.search(r"论文|教授|副教授|法学院|学刊|学报", searchable):
         score += 0.15
-    if "论文" in question:
+    if "论文" in question or (PROFESSOR_QUERY_RE.search(question) and not CASE_QUERY_RE.search(question)):
         score += academic_rank_bonus(item, searchable)
         if not ACADEMIC_PAPER_RE.search(searchable):
             score -= 0.4
@@ -616,20 +618,21 @@ def candidate_rank(item: dict, question: str) -> float:
 
 
 def fetched_page_text(item: dict, fetched: dict) -> str:
-    return str(item.get("title") or "") + " " + fetched["title"] + " " + fetched["content"]
+    return fetched["title"] + " " + fetched["content"]
 
 
 def topic_query_terms(question: str, query: str) -> list[str]:
     generic = {
         "相关", "法律", "法学", "研究", "解读", "观点", "教授", "副教授", "老师", "教师",
         "论文", "期刊", "学刊", "学报", "高校", "权威", "学校", "法学院",
+        "制度", "规定", "问题", "分析", "讨论", "适用", "讲解", "如何", "民事", "刑事",
     }
     aliases = law_title_aliases(question)
     institution_markers = [marker for markers in INSTITUTION_MARKERS.values() for marker in markers]
     terms = []
     for raw_term in re.split(r"[\s，,；;、《》〈〉“”\"'|｜]+", query):
         term = raw_term.strip()
-        if len(term) < 4 or term in generic or ARTICLE_QUERY_RE.search(term):
+        if len(term) < 2 or term in generic or ARTICLE_QUERY_RE.search(term) or term.startswith("site:"):
             continue
         if any(alias in term for alias in aliases) or any(marker in term for marker in institution_markers):
             continue
@@ -639,17 +642,19 @@ def topic_query_terms(question: str, query: str) -> list[str]:
 
 
 def page_relevance_error(question: str, item: dict, fetched: dict, query: str = "") -> str | None:
+    searchable = fetched_page_text(item, fetched)
+    is_academic_paper = bool(ACADEMIC_PAPER_RE.search(searchable[:3000]))
     requested_articles = set(article_numbers(question))
     if not requested_articles:
+        if "论文" in question and not is_academic_paper:
+            return "用户明确要求论文，该网页未体现论文、期刊或学术文章特征"
         return None
-    searchable = fetched_page_text(item, fetched)
     direct_article_match = bool(requested_articles & set(article_numbers(searchable)))
-    is_academic_paper = "论文" in question and bool(ACADEMIC_PAPER_RE.search(searchable[:3000]))
     # 学术论文常只写“《民法总则》”“行为能力宣告”，不逐字写“民法典第22条”。
     # 只有标题/摘要级命中，或正文同时出现两个以上不同的制度术语，才算"这篇论文就是讲这个的"；
     # 单个泛化术语在正文里擦边出现（如“法定代理”）不足以把一篇无关论文纳入证据。
-    topic_terms = topic_query_terms(question, query) if is_academic_paper else []
-    metadata = str(item.get("title") or "") + " " + fetched["title"]
+    topic_terms = topic_query_terms(question, query)
+    metadata = fetched["title"]
     body_hits = {term for term in topic_terms if term in fetched["content"]}
     topic_hit = any(term in metadata for term in topic_terms) or len(body_hits) >= 2
     if not direct_article_match and not topic_hit:
@@ -675,10 +680,14 @@ def plan_queries(question: str, info: dict, institution: str | None = None) -> l
     if not queries:
         info["fallback_query"] = True
         queries = [f"{question} {institution} 教授" if institution else question]
+    for query in queries[:3]:
+        log_web_event(info, {"stage": "plan", "ok": True, "query": query,
+                             "reason": "备选查询已规划，仅在剩余预算内按需执行"}, institution)
     return queries[:3]
 
 
 def plan_topic_retry(question: str, info: dict, institution: str, previous_queries: list[str]) -> list[str]:
+    """Diagnostic rewrite helper; live retrieval reuses the initial multi-query plan."""
     retry_input = (
         f"{question}\n\n此前实际查询均未获得有效证据：{'；'.join(previous_queries)}\n"
         "这一次只规划一个明显不同的主题查询：优先使用本地法条原文中的核心制度、行为或法律效果术语，"
@@ -694,21 +703,31 @@ def plan_topic_retry(question: str, info: dict, institution: str, previous_queri
 
 
 def institution_retry_queries(question: str, institution: str, planned: list[str]) -> list[str]:
-    retries = list(planned[1:])
-    primary = planned[0] if planned else ""
-    labels = article_label_variants(question)
-    labels.sort(key=lambda label: label in primary)
-    law_title = extract_law_title(question) or "相关法律"
-    for label in labels:
-        retries.append(f"{law_title} {label} {institution} 教授 论文")
+    base = without_institution(planned[0] if planned else question)
+    topic = re.sub(r"论文|期刊|学报|教授|讲解|观点", " ", base)
+    retries = list(planned[1:]) + [f"{topic} 学报", f"{topic} 期刊"]
+    primary = school_query(base, institution)
     queries = []
-    seen = {re.sub(r"\s+", "", query) for query in planned[:1]}
     for query in retries:
-        identity = re.sub(r"\s+", "", query)
-        if identity not in seen:
-            seen.add(identity)
+        query = school_query(query, institution)
+        if query != primary and query not in queries:
             queries.append(query)
     return queries[:2]
+
+
+def without_institution(query: str) -> str:
+    """Remove school query qualifiers, preserving case names such as 北大杀母案."""
+    markers = sorted({m for values in INSTITUTION_MARKERS.values() for m in values}, key=len, reverse=True)
+    for marker in markers:
+        query = re.sub(r"(?<![\u4e00-\u9fff])" + re.escape(marker) +
+                       r"(?:的)?(?:副教授|教授|教师|老师|学者)", " ", query)
+        query = re.sub(r"(?<![\u4e00-\u9fff])" + re.escape(marker) + r"(?![\u4e00-\u9fff])", " ", query)
+    return re.sub(r"\s+", " ", query).strip()
+
+
+def school_query(query: str, institution: str) -> str:
+    topic = without_institution(query)[:299 - len(institution)].strip()
+    return f"{topic} {institution}".strip()
 
 
 def search_candidates(question: str, queries: list[str], info: dict, seen_urls: set,
@@ -750,8 +769,8 @@ def search_candidates(question: str, queries: list[str], info: dict, seen_urls: 
 
 def institution_association(item: dict, fetched: dict, institution: str) -> bool:
     # A university domain only proves who published or hosted the page, not the scholar's affiliation.
-    searchable = " ".join(str(item.get(key) or "") for key in ("title", "snippet", "summary"))
-    searchable += " " + fetched["title"] + " " + fetched["content"]
+    # Search snippets are discovery leads, never proof of an affiliation.
+    searchable = fetched["title"] + " " + fetched["content"]
     between = r"[^。！？；\n]{0,50}"
     for marker in INSTITUTION_MARKERS[institution]:
         escaped = re.escape(marker)
@@ -845,10 +864,7 @@ def discover_case_entities(candidates: list[tuple[dict, str]],
 
 def case_core_text(question: str, base_query: str) -> str:
     """使用路由检索词保留案件核心词，去掉学校与资料形式限定。"""
-    text = (base_query or question).strip()
-    markers = [marker for values in INSTITUTION_MARKERS.values() for marker in values]
-    for marker in sorted(markers, key=len, reverse=True):
-        text = text.replace(marker, " ")
+    text = without_institution(base_query or question)
     text = re.sub(r"四校|高校|法学院|教授|副教授|老师|教师|学者|论文|期刊", " ", text)
     return re.sub(r"\s+", " ", text).strip()[:160]
 
@@ -865,6 +881,9 @@ def case_relevance_terms(case_core: str, entity: str = "") -> list[str]:
         if len(term) < 2 or term in CASE_CORE_GENERIC:
             continue
         candidates = [term]
+        shortened = re.sub(r"(?:案件|事件|案)$", "", term)
+        if shortened != term and len(shortened) >= 2:
+            candidates.append(shortened)
         if len(term) > 24:
             candidates.extend(re.findall(r"[\u4e00-\u9fff]{2,12}(?:案|事件)", term))
         for candidate in candidates:
@@ -911,7 +930,7 @@ def extract_excerpt(text: str, terms: list[str], labels: list[str], limit: int =
     """
     if not text:
         return ""
-    keys = [term for term in (terms or []) if len(term) >= 4] + [label for label in (labels or []) if label]
+    keys = [term for term in (terms or []) if len(term) >= 2] + [label for label in (labels or []) if label]
     if not keys:
         return ""
     picked, total = [], 0
@@ -926,206 +945,329 @@ def extract_excerpt(text: str, terms: list[str], labels: list[str], limit: int =
     return "\n".join(picked)
 
 
+def opinion_author_names(title: str, text: str) -> list[str]:
+    """Discover bylines/speakers, not every name merely mentioned in a page."""
+    source = title + "\n" + text
+    patterns = (
+        rf"(?:作者|主讲人|受访者|演讲者)[：:\s]+(?P<name>{CASE_NAME_RE}){CASE_NAME_RIGHT_RE}",
+        rf"(?P<name>{CASE_NAME_RE})\s*(?:教授|副教授)?(?:认为|指出|表示|评析|评论|接受采访)",
+        rf"(?P<name>{CASE_NAME_RE}){CASE_NAME_RIGHT_RE}(?:在|就|对)[^。！？；\n]{{0,35}}?(?:认为|指出|表示|评析|评论)",
+        rf"^(?P<name>{CASE_NAME_RE})(?:教授)?(?:访谈|演讲|对谈|专访)",
+        rf"^(?P<name>{CASE_NAME_RE})[：:]",
+    )
+    names = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, source, re.M):
+            name = match.group("name")
+            if name not in names:
+                names.append(name)
+    return names[:3]
+
+
+def remember_identities(pages: list[tuple[dict, str, dict]], institution: str,
+                        identities: dict[str, list[dict]]) -> None:
+    """Only fetched university pages can independently establish a named affiliation."""
+    for _item, _query, page in pages:
+        host = (urllib.parse.urlparse(page["url"]).hostname or "").lower()
+        if not host.endswith(".edu.cn") or not institution_association({}, page, institution):
+            continue
+        text = page["title"] + "\n" + page["content"]
+        names = extract_case_scholar_names(text, institution)
+        # Faculty pages often put a sole name in the heading and affiliation on a separate line.
+        heading = re.fullmatch(rf"(?P<name>{CASE_NAME_RE})(?:[\s·|｜—-]+.*|(?:教师|个人|人物)简介)?", page["title"].strip())
+        if heading and heading.group("name") not in names:
+            names.append(heading.group("name"))
+        for name in names:
+            position = text.find(name)
+            record = {
+                "name": name, "institution": institution, "source_url": page["url"],
+                "document_title": page["title"],
+                "excerpt": text[max(0, position - 60):position + 180],
+                "content_hash": hashlib.sha256(page["content"].encode("utf-8")).hexdigest(),
+            }
+            sources = identities.setdefault(name, [])
+            if not any(source["source_url"] == record["source_url"] for source in sources):
+                sources.append(record)
+
+
+def page_evidence(search_item: dict, fetched: dict, query: str, question: str | None,
+                  institution: str | None = None, case_mode: bool = False,
+                  case_core: str = "", entity: str = "", identities: dict | None = None,
+                  topic_context: str = "") -> tuple[dict | None, str | None]:
+    identity_sources = []
+    if institution:
+        if re.search(r"个人简介|教师简介|师资介绍|人物简介|师资队伍", fetched["title"]):
+            return None, "身份介绍页只用于任职核验，不作为观点正文"
+        if re.search(r"预告|活动安排|招聘|课程通知", fetched["title"]):
+            return None, "活动预告不作为学者的具体观点正文"
+        authors = opinion_author_names(fetched["title"], fetched["content"])
+        direct = institution_association(search_item, fetched, institution)
+        direct_names = extract_case_scholar_names(fetched["title"] + "\n" + fetched["content"], institution)
+        # A different school member elsewhere in a page cannot prove the author's affiliation.
+        if direct and authors and direct_names and not set(authors).intersection(direct_names):
+            direct = False
+        if not direct:
+            for other in TARGET_INSTITUTIONS:
+                if other == institution:
+                    continue
+                other_names = extract_case_scholar_names(fetched["title"] + "\n" + fetched["content"], other)
+                if set(authors).intersection(other_names):
+                    return None, "观点作者明确属于其他目标院校，不能仅凭同名身份页归入本校"
+            for name in authors:
+                if identities and name in identities:
+                    identity_sources.extend(identities[name])
+            if not identity_sources:
+                return None, "网页未明确体现目标机构教师关联，且没有可链接的官方身份正文"
+    if case_mode:
+        error = case_opinion_relevance_error(search_item, fetched, case_core, entity)
+        if error:
+            return None, error
+    if question:
+        error = page_relevance_error(question, search_item, fetched, f"{query} {topic_context}")
+        if error:
+            return None, error
+    item = normalize_web_evidence(search_item, fetched, query)
+    if question:
+        item["excerpt"] = extract_excerpt(item["text"], topic_query_terms(question, f"{query} {topic_context}"), article_label_variants(question))
+    if question and article_numbers(question):
+        body = fetched_page_text(search_item, fetched)
+        aliases = law_title_aliases(question)
+        direct_article_match = bool(set(article_numbers(question)) & set(article_numbers(body))) and (
+            not aliases or any(alias in body for alias in aliases))
+        is_paper = bool(ACADEMIC_PAPER_RE.search(body[:3000]))
+        item["relevance_basis"] = "article_text" if direct_article_match else ("topic_paper" if is_paper else "topic_related")
+        if not direct_article_match:
+            item["article_label"] = "主题相关论文网页" if is_paper else "主题相关网页"
+            item["source_notice"] = "该网页未逐字引用所问条号，仅按法条主题相关性采用，不能作为逐条释义。" + item["source_notice"]
+    if case_mode:
+        item["relevance_basis"] = "case_topic_and_opinion_text"
+        if entity:
+            item["entity"] = entity
+    if institution:
+        item["institution"] = institution
+        item["section_path"] = [institution, item["source_name"], "四校定向检索"]
+    if identity_sources:
+        item["identity_sources"] = identity_sources
+        item["source_notice"] += "按本文署名与另附高校网页的同名任职记载交叉关联，同名歧义仍需复核；身份页不证明本页观点，也不提高本页证据等级。"
+    return item, None
+
+
 def fetch_candidates(candidates: list[tuple[dict, str]], info: dict, institution: str | None = None,
                      evidence_limit: int = 4, candidate_limit: int = 5,
                      question: str | None = None,
                      discovery_sink: list[tuple[dict, str, dict]] | None = None,
                      case_mode: bool = False, case_core: str = "",
-                     entity: str = "") -> list[dict]:
+                     entity: str = "", identities: dict | None = None,
+                     topic_context: str = "") -> list[dict]:
     evidence = []
-    processed_urls = set()
     batch = candidates[:candidate_limit]
 
-    # 逐条串行抓取时，每个页面要等 2–5 秒，十个候选就是半分钟。
-    # 这里并发抓取、串行判定：顺序和日志不变，墙钟时间降到最慢那一条。
-    def _fetch(pair: tuple[dict, str]):
-        search_item, query = pair
-        url = str(search_item["url"])
-        try:
-            return pair, WEB.fetch(url), None
-        except WebSearchError as error:
-            return pair, None, error
+    def fetch(pair):
+        return pair, WEB.fetch(str(pair[0]["url"]))
 
-    outcomes = parallel_calls([lambda pair=pair: _fetch(pair) for pair in batch],
+    outcomes = parallel_calls([lambda pair=pair: fetch(pair) for pair in batch],
                               timeout=FETCH_TIMEOUT, max_workers=8)
-    fetched_results = [(pair, None, result) if isinstance(result, Exception) else result
-                       for pair, result in zip(batch, outcomes)]
-
-    for (search_item, query), fetched, error in fetched_results:
-        url = str(search_item["url"])
-        processed_urls.add(url)
+    successful = []
+    for pair, outcome in zip(batch, outcomes):
+        item, query = pair
         info["fetch_attempt_count"] = info.get("fetch_attempt_count", 0) + 1
-        if error is not None:
-            log_web_event(info, {
-                "stage": "fetch", "query": query, "url": url, "ok": False, "error": str(error),
-            }, institution)
+        if isinstance(outcome, Exception):
+            log_web_event(info, {"stage": "fetch", "query": query, "url": item["url"], "ok": False,
+                                 "error": str(outcome)}, institution)
             continue
+        _, page = outcome
+        successful.append((item, query, page))
         info["content_fetched_count"] = info.get("content_fetched_count", 0) + 1
-        log_web_event(info, {"stage": "fetch", "query": query, "url": url, "ok": True}, institution)
-        if discovery_sink is not None:
-            discovery_sink.append((search_item, query, fetched))
-        if institution and not institution_association(search_item, fetched, institution):
-            reject_candidate(info, url, institution, "网页未明确体现目标机构教师关联，未作为该校证据", query)
+        log_web_event(info, {"stage": "fetch", "query": query, "url": item["url"], "ok": True}, institution)
+    if discovery_sink is not None:
+        discovery_sink.extend(successful)
+    if institution and identities is not None:
+        remember_identities(successful, institution, identities)
+    # Complete identity collection before evaluating any opinion in this batch.
+    for search_item, query, page in successful:
+        item, error = page_evidence(search_item, page, query, question, institution,
+                                    case_mode, case_core, entity, identities, topic_context)
+        if error:
+            reject_candidate(info, search_item["url"], institution, error, query)
             continue
-        if case_mode:
-            relevance_error = case_opinion_relevance_error(search_item, fetched, case_core, entity)
-            if relevance_error:
-                reject_candidate(info, url, institution, relevance_error, query)
-                continue
-        if question:
-            relevance_error = page_relevance_error(question, search_item, fetched, query)
-            if relevance_error:
-                reject_candidate(info, url, institution, relevance_error, query)
-                continue
-        item = normalize_web_evidence(search_item, fetched, query)
-        if question:
-            item["excerpt"] = extract_excerpt(
-                item["text"],
-                topic_query_terms(question, query),
-                article_label_variants(question),
-            )
-        if question and article_numbers(question):
-            direct_article_match = bool(
-                set(article_numbers(question)) & set(article_numbers(fetched_page_text(search_item, fetched)))
-            )
-            item["relevance_basis"] = "article_text" if direct_article_match else "topic_paper"
-            if not direct_article_match:
-                item["article_label"] = "主题相关论文网页"
-                item["source_notice"] = "该网页未逐字引用所问条号，仅按法条主题相关性采用，不能作为逐条释义。" + item["source_notice"]
-        if case_mode:
-            item["relevance_basis"] = "case_topic_and_opinion_text"
-            item["retrieval_round"] = info.get("_active_round", "first")
-            item["query_source"] = info.get("_query_source", "case_base_query")
-            if entity:
-                item["entity"] = entity
-        if institution:
-            item["institution"] = institution
-            item["section_path"] = [institution, item["source_name"], "四校定向检索"]
-        evidence.append(item)
-        log_web_event(info, {"stage": "evidence", "query": query, "url": url, "ok": True}, institution)
         if len(evidence) >= evidence_limit:
-            break
-    for search_item, query in candidates:
-        url = str(search_item["url"])
-        if url in processed_urls:
             continue
-        reason = "已获得本轮所需有效证据，停止继续抓取" if len(evidence) >= evidence_limit else f"超出本轮最多 {candidate_limit} 个正文抓取候选的上限"
-        reject_candidate(info, url, institution, reason, query)
+        item["retrieval_round"] = info.get("_active_round", "first")
+        item["query_source"] = info.get("_query_source", "case_base_query")
+        evidence.append(item)
+        log_web_event(info, {"stage": "evidence", "query": query, "url": search_item["url"], "ok": True}, institution)
+    for search_item, query in candidates[candidate_limit:]:
+        log_web_event(info, {"stage": "candidate", "query": query, "url": search_item["url"], "ok": True,
+                             "reason": "候选暂存，剩余预算内继续尝试"}, institution)
     return evidence
 
 
 def general_web_search(question: str, info: dict, seen_urls: set,
                        initial_query: str | None = None) -> list[dict]:
-    # 路由阶段已经给出检索词时直接复用，避免为同一问题再做一次模型规划。
     if initial_query and initial_query.strip():
-        queries = [initial_query.strip()[:300]]
-        log_web_event(info, {"stage": "plan", "ok": True, "query": queries[0],
-                             "reason": "复用路由阶段的联网检索词"})
+        base = initial_query.strip()[:240]
+        queries = ([base, f"{base} 事件经过 裁判文书", f"{base} 官方 通报"]
+                   if CASE_QUERY_RE.search(question) else
+                   [base, f"{base} 官方 法规", f"{base} 学术 解读"])
+        log_web_event(info, {"stage": "plan", "ok": True, "query": base,
+                             "reason": "复用路由词，按需补充不同资料形式"})
     else:
         queries = plan_queries(question, info)
-    for query in queries:
+    evidence = []
+    backlog = []
+    attempted = set()
+    for query in queries[:3]:
+        if len(attempted) >= 10:
+            break
         candidates = search_candidates(question, [query], info, seen_urls)
-        evidence = fetch_candidates(candidates, info, question=question)
-        # 普通全网检索首条查询已有有效正文即停止；备选词只在失败时使用。
-        if evidence:
-            return evidence
-    return []
+        backlog.extend(candidates)
+        available = [pair for pair in backlog if pair[0]["url"] not in attempted]
+        available.sort(key=lambda pair: candidate_rank(pair[0], question), reverse=True)
+        batch = available[:min(5, 10 - len(attempted))]
+        attempted.update(item["url"] for item, _query in batch)
+        found = fetch_candidates(batch, info, question=question, evidence_limit=4 - len(evidence))
+        evidence = dedupe_evidence(evidence + found)
+        domains = {urllib.parse.urlparse(item["source_url"]).hostname for item in evidence}
+        # One usable page is not proof that the task has sufficient source coverage.
+        if len(evidence) >= 4 or len(domains) >= 2:
+            break
+    return evidence
 
 
 def _search_one_institution(question: str, institution: str, base_query: str = "",
-                            candidate_limit: int = 8) -> tuple[list[dict], dict]:
-    """法条仍只搜一次；案件最多两轮，第二轮只使用首轮真实文本发现的人物。"""
+                            candidate_limit: int = 6,
+                            planned_queries: list[str] | None = None) -> tuple[list[dict], dict]:
+    """Bounded expansion: up to three searches and ten fetched pages per school."""
+    case_mode = bool(CASE_QUERY_RE.search(question))
     local = {
         "queries": [], "search_count": 0, "candidate_count": 0,
         "fetch_attempt_count": 0, "content_fetched_count": 0,
         "rejected_count": 0, "events": [], "entities": [],
-        "case_mode": bool(CASE_QUERY_RE.search(question)), "second_round": False,
-        "second_round_entity": "",
-        "_active_round": "first", "_query_source": "case_base_query",
+        "case_mode": case_mode, "second_round": False,
+        "second_round_entity": "", "_active_round": "first",
+        "_query_source": "case_base_query" if case_mode else "topic_primary",
     }
     seen_urls: set = set()
     evidence: list[dict] = []
+    pages: list[tuple[dict, str, dict]] = []
+    identities: dict[str, list[dict]] = {}
+    backlog: list[tuple[dict, str]] = []
+    attempted: set[str] = set()
+    searched_entities: set[str] = set()
+    identity_lookups: set[str] = set()
+    core = case_core_text(question, base_query or question)
+    terms = [term for term in case_relevance_terms(core) if term not in {"判决", "结果", "经过"}]
+    if case_mode:
+        topic = " ".join(terms) or core
+        alternate = " ".join(term for term in terms if not re.search(r"(?:案|事件)$", term)) or topic
+        plans = [school_query(f"{topic} 评论", institution),
+                 school_query(f"{alternate} 访谈 演讲", institution),
+                 school_query(f"{topic} 新书 对谈", institution)]
+    else:
+        seeds = planned_queries or [base_query or question]
+        plans = [school_query(seeds[0], institution), *institution_retry_queries(question, institution, seeds)]
+    topic_context = " ".join(plans)
     try:
-        core = case_core_text(question, base_query or question)
-        query = f"{base_query} {institution}".strip() if base_query else question
-        if local["case_mode"]:
-            # 观点检索去掉“判决”等泛化任务词，保留案件名和当事人。
-            core_terms = case_relevance_terms(core)
-            query = f"{' '.join(core_terms) if core_terms else core} {institution}".strip()
-            # 首轮就覆盖观点常见载体，避免只搜“案件名＋教授评论”而漏掉新书对谈。
-            source_forms = " ".join(
-                term for term in ("评论", "演讲", "访谈", "新书", "对谈") if term not in query
+        for round_index in range(MAX_SCHOOL_SEARCHES):
+            remaining = MAX_SCHOOL_FETCHES - local["fetch_attempt_count"]
+            if evidence or remaining <= 0:
+                break
+            local["_active_round"] = ("first", "second", "third")[round_index]
+            query_source = "case_base_query" if case_mode else "topic_primary"
+            query = ""
+            entity = ""
+            if round_index:
+                entities = discover_case_entities(backlog, pages, institution)
+                local["entities"] = list(dict.fromkeys(local["entities"] + [entry["name"] for entry in entities]))
+                # An author in an otherwise relevant opinion page may lack an affiliation.
+                authors = []
+                for item, previous_query, page in pages:
+                    if case_mode and case_opinion_relevance_error(item, page, core):
+                        continue
+                    if page_relevance_error(question, item, page, f"{previous_query} {topic_context}"):
+                        continue
+                    authors.extend(opinion_author_names(page["title"], page["content"]))
+                unknown = [name for name in dict.fromkeys(authors) if name not in identities and name not in identity_lookups]
+                unknown.sort(key=lambda name: name not in local["entities"])
+                if unknown and not identity_lookups:
+                    entity = unknown[0]
+                    identity_lookups.add(entity)
+                    query = f"{entity} {institution} 教师简介 site:edu.cn"
+                    query_source = "identity_lookup"
+                elif case_mode:
+                    pending = [entry["name"] for entry in entities if entry["name"] not in searched_entities]
+                    if pending:
+                        entity = pending[0]
+                        searched_entities.add(entity)
+                        query = school_query(f"{entity} {core} 评论 访谈", institution)
+                        query_source = "first_round_entity"
+                if not query:
+                    query = next((candidate for candidate in plans if candidate not in local["queries"]), "")
+                    query_source = "topic_variant"
+                if not query:
+                    break
+                local["second_round"] = True
+                local["second_round_entity"] = entity
+            else:
+                query = plans[0]
+            local["_query_source"] = query_source
+            if entity:
+                local["_active_entity"] = entity
+                log_web_event(local, {"stage": "entity", "ok": True, "entity": entity,
+                                     "reason": "姓名来自已读取的正文或真实搜索线索，仅用于后续核验"}, institution)
+                if query_source == "first_round_entity":
+                    sources = next((entry["sources"] for entry in entities if entry["name"] == entity), [])
+                    log_web_event(local, {"stage": "second_round", "ok": True, "entity": entity,
+                                         "query": query, "entity_sources": sources}, institution)
+            else:
+                local.pop("_active_entity", None)
+            if round_index:
+                log_web_event(local, {"stage": "retry", "ok": True, "query": query,
+                                     "reason": "未取得有效正文，按剩余搜索与抓取预算扩检"}, institution)
+            candidates = search_candidates(question, [query], local, seen_urls, institution)
+            backlog.extend(candidates)
+            available = [pair for pair in backlog if pair[0]["url"] not in attempted]
+            available.sort(key=lambda pair: candidate_rank(pair[0], question), reverse=True)
+            limit = min(candidate_limit, remaining)
+            batch = available[:limit]
+            attempted.update(item["url"] for item, _query in batch)
+            evidence = fetch_candidates(
+                batch, local, institution, evidence_limit=1, candidate_limit=limit,
+                question=question, discovery_sink=pages, case_mode=case_mode,
+                case_core=core, identities=identities, topic_context=topic_context,
             )
-            query = f"{query} {source_forms}".strip()
-        query = query[:300]
-        fetched_pages: list[tuple[dict, str, dict]] = []
-        candidates = search_candidates(question, [query], local, seen_urls, institution)
-        evidence = fetch_candidates(
-            candidates, local, institution, evidence_limit=1,
-            candidate_limit=candidate_limit, question=question,
-            discovery_sink=fetched_pages if local["case_mode"] else None,
-            case_mode=local["case_mode"], case_core=core,
-        )
-        if not local["case_mode"]:
-            return evidence, local
-
-        entities = discover_case_entities(candidates, fetched_pages, institution)
-        local["entities"] = [entity["name"] for entity in entities]
-        for entity in entities:
-            log_web_event(local, {
-                "stage": "entity", "ok": True, "entity": entity["name"],
-                "sources": entity["sources"], "reason": "姓名与目标机构教师身份在真实检索文本中相邻出现",
-            }, institution)
-        if not entities:
-            log_web_event(local, {
-                "stage": "entity", "ok": True, "entity_count": 0,
-                "reason": "首轮真实文本未发现可可靠提取的目标机构教师姓名",
-            }, institution)
-
+            # A newly fetched identity page can validate an earlier opinion without fetching it again.
+            if not evidence and identities:
+                for item, previous_query, page in pages:
+                    recovered, error = page_evidence(item, page, previous_query, question,
+                                                     institution, case_mode, core, identities=identities,
+                                                     topic_context=topic_context)
+                    if not error:
+                        recovered["retrieval_round"] = local["_active_round"]
+                        recovered["query_source"] = "identity_lookup"
+                        evidence = [recovered]
+                        log_web_event(local, {"stage": "evidence", "ok": True, "url": item["url"],
+                                             "query": previous_query,
+                                             "reason": "用新取得的官方身份来源复核此前已读取的观点正文"}, institution)
+                        break
+        entities = discover_case_entities(backlog, pages, institution)
+        local["entities"] = list(dict.fromkeys(local["entities"] + [entry["name"] for entry in entities]))
         for item in evidence:
-            haystack = str(item.get("document_title") or "") + "\n" + str(item.get("text") or "")
-            item["entities"] = [entity["name"] for entity in entities if entity["name"] in haystack]
-        covered = {name for item in evidence for name in item.get("entities", [])}
-        pending = [entity for entity in entities if entity["name"] not in covered]
-        if not pending or covered:
-            reason = (
-                "首轮未发现人物，不追加搜索" if not entities else
-                "首轮人物均已获得可用正文观点证据" if not pending else
-                "首轮已获得至少一位人物的可用正文证据，其他线索不追加检索"
-            )
-            log_web_event(local, {
-                "stage": "second_round", "ok": True, "skipped": True,
-                "reason": reason,
-                "deferred_entities": [entity["name"] for entity in pending],
-            }, institution)
-            return evidence, local
-
-        # 每校第二轮只有这一次搜索，因此只取首个尚无证据的人物；其余人物有界跳过。
-        selected = pending[0]
-        name = selected["name"]
-        local["second_round"] = True
-        local["second_round_entity"] = name
-        local["_active_round"] = "second"
-        local["_query_source"] = "first_round_entity"
-        local["_active_entity"] = name
-        second_query = f"{name} {core} {institution} 评论 演讲 访谈 新书"
-        second_query = re.sub(r"\s+", " ", second_query).strip()[:300]
-        log_web_event(local, {
-            "stage": "second_round", "ok": True, "query": second_query,
-            "entity_sources": selected["sources"],
-            "reason": "首轮发现该人物但未获得其可用正文观点证据，执行一次精准查询",
-            "deferred_entities": [entity["name"] for entity in pending[1:]],
-        }, institution)
-        second_candidates = search_candidates(
-            question, [second_query], local, seen_urls, institution,
-        )
-        evidence.extend(fetch_candidates(
-            second_candidates, local, institution, evidence_limit=1,
-            candidate_limit=2, question=question, case_mode=True,
-            case_core=core, entity=name,
-        ))
+            item["entities"] = [name for name in local["entities"] if name in item["text"]]
+            if item.get("identity_sources"):
+                item["entities"] = list(dict.fromkeys(item["entities"] + [source["name"] for source in item["identity_sources"]]))
+            if local.get("_active_entity"):
+                item["entity"] = local["_active_entity"]
+        local["identity_source_count"] = sum(len(sources) for sources in identities.values())
+        local["stop_reason"] = ("已取得有效观点正文" if evidence else
+                                "正文抓取预算已用尽" if local["fetch_attempt_count"] >= MAX_SCHOOL_FETCHES else
+                                "搜索预算或可用查询已用尽")
+        if evidence and local["search_count"] == 1:
+            log_web_event(local, {"stage": "second_round", "ok": True, "skipped": True,
+                                 "reason": "首轮已有有效观点正文，停止扩检"}, institution)
     except Exception as error:  # noqa: BLE001
-        local["events"].append({"stage": "error", "ok": False, "error": f"单校检索异常：{error}"})
+        local["failure"] = str(error)
+        local["events"].append({"stage": "filter", "ok": False, "error": f"单校检索停止：{error}"})
     return evidence, local
 
 
@@ -1147,6 +1289,8 @@ def _merge_institution_info(info: dict, institution: str, evidence: list[dict], 
         "entities": local.get("entities", []),
         "second_round": local.get("second_round", False),
         "second_round_entity": local.get("second_round_entity", ""),
+        "identity_source_count": local.get("identity_source_count", 0),
+        "stop_reason": local.get("stop_reason", ""),
         **({} if evidence else {"reason": local.get("failure") or empty_reason}),
     })
 
@@ -1189,12 +1333,13 @@ def retrieve_web_evidence(question: str, enabled: bool = True,
             log_web_event(info, {"stage": "plan", "ok": True, "query": base_query,
                                  "reason": "复用路由阶段的案件检索词"})
         else:
-            base_queries = plan_queries(question, info)
+            base_queries = plan_queries(question, info, institution=TARGET_INSTITUTIONS[0])
             base_query = base_queries[0] if base_queries else question
         results: dict[str, tuple[list[dict], dict]] = {}
         outcomes = parallel_calls([
             lambda institution=institution: _search_one_institution(
-                question, institution, base_query, 3 if case_query else 8)
+                question, institution, base_query, 6,
+                base_queries if not initial_query else None)
             for institution in TARGET_INSTITUTIONS
         ], timeout=INSTITUTION_TIMEOUT, max_workers=len(TARGET_INSTITUTIONS))
         for institution, result in zip(TARGET_INSTITUTIONS, outcomes):
@@ -1473,7 +1618,8 @@ class Handler(BaseHTTPRequestHandler):
         is_case = plan.get("kind") == "case"
         _stage("retrieving")
 
-        if is_case and web_enabled:
+        need_main_web = web_enabled and (is_case or bool(plan.get("need_web")))
+        if need_main_web:
             # 两路检索互不依赖，并行执行；网页查询复用路由结果，不再规划第二次。
             outcomes = parallel_calls([
                 lambda: evidence_by_plan(search_question, plan),
@@ -1493,9 +1639,12 @@ class Handler(BaseHTTPRequestHandler):
             web_evidence, web_info = [], {}
         timings["retrieval"] = _elapsed_ms()
 
-        if is_case and web_enabled:
-            _stage("supplementing")
-            laws = case_articles(search_question, web_evidence or evidence)
+        if need_main_web:
+            if is_case:
+                _stage("supplementing")
+                laws = case_articles(search_question, web_evidence or evidence)
+            else:
+                laws = []
             evidence = dedupe_evidence(laws + evidence + web_evidence)
             retrieval["web_search"] = web_info
             notices = [value for value in (retrieval.get("notice"), web_info.get("notice")) if value]

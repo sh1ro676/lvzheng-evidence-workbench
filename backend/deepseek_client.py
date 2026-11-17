@@ -246,6 +246,10 @@ class DeepSeekClient:
                 label = item.get("evidence_tier_label") or "转述待核"
                 notice = item.get("source_notice") or "来源与内容形态无法确认，只能标注未核实或不采用。"
                 header += f"证据等级：{label}（{tier}）\n使用边界：{notice}\n"
+                for identity in item.get("identity_sources", []):
+                    header += (f"独立身份核验：{identity['name']} / {identity['institution']} / "
+                               f"{identity['source_url']}\n任职记载：{identity['excerpt']}\n"
+                               "该身份页只支持任职关联，不证明观点、不提高当前正文的证据等级。\n")
             if str(item.get("excerpt") or "").strip():
                 return header + f"与所问条文直接相关的原文摘录（逐字，未改写）：\n{item['excerpt']}"
             return header + f"原文：{item['text']}"

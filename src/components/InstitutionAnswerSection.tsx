@@ -118,7 +118,7 @@ export function InstitutionAnswerSection({ lines, evidence, webSearch, renderPar
           const result = webSearch.institution_results?.find((item) => item.institution === institution)
           const suffixes = [...new Set(schoolBlocks.map((block) => block.suffix).filter(Boolean))]
           const hasDirect = schoolEvidence.some((item) => item.relevance_basis === 'article_text')
-          const hasTopic = schoolEvidence.some((item) => item.relevance_basis === 'topic_paper')
+          const hasTopic = schoolEvidence.some((item) => item.relevance_basis === 'topic_paper' || item.relevance_basis === 'topic_related')
           const hasUncategorizedEvidence = schoolEvidence.some((item) => !item.relevance_basis)
 
           return (
@@ -133,7 +133,7 @@ export function InstitutionAnswerSection({ lines, evidence, webSearch, renderPar
                 </div>
                 <div className="school-badges">
                   {hasDirect && <span className="relevance-badge is-direct">正文提及所问条号</span>}
-                  {hasTopic && <span className="relevance-badge is-topic">主题相关论文</span>}
+                  {hasTopic && <span className="relevance-badge is-topic">主题相关资料</span>}
                   {hasUncategorizedEvidence && <span className="relevance-badge">公开网页正文</span>}
                   {schoolEvidence.length === 0 && <span className="relevance-badge is-missed">{result?.found === false ? '本次未命中' : result?.found ? '记录命中' : '状态未知'}</span>}
                 </div>
@@ -142,7 +142,7 @@ export function InstitutionAnswerSection({ lines, evidence, webSearch, renderPar
               {schoolBlocks.length > 0 ? (
                 <div className="opinion-body">
                   {schoolBlocks.map((block, blockIndex) => block.lines.map((line, lineIndex) => renderParagraph(line, `${institution}-${blockIndex}-${lineIndex}`)))}
-                  {hasTopic && <p className="topic-limit-note"><BookOpen size={15} />主题相关论文未逐字引用所问条号，不作为逐条释义依据。</p>}
+                  {hasTopic && <p className="topic-limit-note"><BookOpen size={15} />主题相关资料未逐字引用所问条号，不作为逐条释义依据。</p>}
                 </div>
               ) : (
                 <div className="school-opinion-empty">

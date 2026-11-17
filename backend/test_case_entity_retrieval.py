@@ -121,8 +121,8 @@ class CaseEntitySecondRoundTest(unittest.TestCase):
 
         self.assertEqual(info["search_count"], 2)
         self.assertEqual(web.queries, [
-            "吴谢宇案 中国政法大学 评论 演讲 访谈 新书 对谈",
-            "罗翔 吴谢宇案 判决 中国政法大学 评论 演讲 访谈 新书",
+            "吴谢宇案 吴谢宇 评论 中国政法大学",
+            "罗翔 吴谢宇案 判决 评论 访谈 中国政法大学",
         ])
         self.assertEqual(info["entities"], ["罗翔"])
         self.assertTrue(info["second_round"])
@@ -134,16 +134,16 @@ class CaseEntitySecondRoundTest(unittest.TestCase):
         self.assertEqual(evidence[0]["query_source"], "first_round_entity")
         self.assertEqual(evidence[0]["relevance_basis"], "case_topic_and_opinion_text")
         self.assertNotIn("一手原话", evidence[0]["source_notice"])
-        # 第二轮最多抓两个候选，不能因第三条结果继续抓取。
-        self.assertEqual(len([url for url in web.fetched if "/second-" in url]), 2)
-        self.assertNotIn("https://example.com/second-3", web.fetched)
+        # 每轮按传入的候选上限抓取，全部重试仍受累计预算限制。
+        self.assertEqual(len([url for url in web.fetched if "/second-" in url]), 3)
+        self.assertLessEqual(info["fetch_attempt_count"], server.MAX_SCHOOL_FETCHES)
         second_events = [event for event in info["events"] if event.get("round") == "second"]
         self.assertTrue(second_events)
         self.assertTrue(all(event.get("entity") == "罗翔" for event in second_events))
         self.assertTrue(any(event["stage"] == "second_round" and event.get("entity_sources")
                             for event in second_events))
 
-    def test_no_reliable_entity_means_no_additional_search(self):
+    def test_no_reliable_entity_still_uses_bounded_topic_retries(self):
         first_url = "https://example.com/no-entity"
         web = FakeWeb(
             batches=[[result(
@@ -160,12 +160,11 @@ class CaseEntitySecondRoundTest(unittest.TestCase):
                 CASE_QUESTION, INSTITUTION, CASE_QUERY, candidate_limit=3,
             )
         self.assertEqual(evidence, [])
-        self.assertEqual(info["search_count"], 1)
-        self.assertEqual(len(web.queries), 1)
+        self.assertEqual(info["search_count"], 3)
+        self.assertEqual(len(web.queries), 3)
         self.assertEqual(info["entities"], [])
-        self.assertFalse(info["second_round"])
-        self.assertTrue(any(event["stage"] == "second_round" and event.get("skipped")
-                            and "不追加搜索" in event["reason"] for event in info["events"]))
+        self.assertTrue(info["second_round"])
+        self.assertTrue(any(event["stage"] == "retry" for event in info["events"]))
 
     def test_search_summary_is_not_evidence_when_second_fetch_fails(self):
         first_url = "https://example.com/discovery"
@@ -183,7 +182,7 @@ class CaseEntitySecondRoundTest(unittest.TestCase):
             evidence, info = server._search_one_institution(
                 CASE_QUESTION, INSTITUTION, CASE_QUERY, candidate_limit=3,
             )
-        self.assertEqual(info["search_count"], 2)
+        self.assertEqual(info["search_count"], 3)
         self.assertEqual(evidence, [])
         self.assertEqual(info["fetched_count"] if "fetched_count" in info else 0, 0)
         self.assertTrue(any(event["stage"] == "fetch" and not event["ok"]
@@ -213,7 +212,7 @@ class CaseEntitySecondRoundTest(unittest.TestCase):
                 CASE_QUESTION, INSTITUTION, CASE_QUERY, candidate_limit=3,
             )
         self.assertEqual(evidence, [])
-        self.assertEqual(info["search_count"], 2)
+        self.assertEqual(info["search_count"], 3)
         rejection = next(event for event in info["events"]
                          if event.get("url") == second_url and event["stage"] == "filter")
         self.assertIn("目标机构教师关联", rejection["reason"])
@@ -236,9 +235,9 @@ class CaseEntitySecondRoundTest(unittest.TestCase):
         self.assertEqual(info["search_count"], 1)
         self.assertFalse(info["second_round"])
         self.assertTrue(any(event["stage"] == "second_round" and event.get("skipped")
-                            and "均已获得" in event["reason"] for event in info["events"]))
+                            and "停止扩检" in event["reason"] for event in info["events"]))
 
-    def test_non_case_institution_search_never_adds_entity_round(self):
+    def test_non_case_biography_uses_topic_retries_without_inventing_opinion(self):
         url = "https://example.com/statute"
         web = FakeWeb(
             batches=[[result("statute", snippet="中国政法大学教授罗翔评论居住权。")]],
@@ -253,9 +252,9 @@ class CaseEntitySecondRoundTest(unittest.TestCase):
                 "民法典 第368条 居住权", candidate_limit=8,
             )
         self.assertFalse(info["case_mode"])
-        self.assertEqual(info["search_count"], 1)
-        self.assertEqual(len(web.queries), 1)
-        self.assertFalse(info["second_round"])
+        self.assertEqual(info["search_count"], 3)
+        self.assertEqual(len(web.queries), 3)
+        self.assertTrue(info["second_round"])
         self.assertFalse(any(event["stage"] in {"entity", "second_round"} for event in info["events"]))
 
 

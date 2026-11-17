@@ -95,11 +95,11 @@ class WebRetrievalTest(unittest.TestCase):
         web = InstitutionWeb(found)
         with patch.object(server, "DEEPSEEK", FakePlanner()), patch.object(server, "WEB", web):
             evidence, info = server.retrieve_web_evidence("民法典第368条，需要四校高校老师的讲解")
-        # 四校各检索一次：规划共用一条查询，不再逐校重试。
-        self.assertEqual(len(web.queries), 4)
+        # 已命中学校不重试；两所未命中学校各执行三条查询。
+        self.assertEqual(len(web.queries), 8)
         self.assertEqual({item["institution"] for item in evidence}, found)
         self.assertEqual([item["found"] for item in info["institution_results"]], [True, False, True, False])
-        self.assertEqual([item["search_count"] for item in info["institution_results"]], [1, 1, 1, 1])
+        self.assertEqual([item["search_count"] for item in info["institution_results"]], [1, 3, 1, 3])
         self.assertFalse(info["fallback_general"])
         self.assertFalse(any("general" in event.get("url", "") for event in info["events"]))
 
@@ -107,7 +107,7 @@ class WebRetrievalTest(unittest.TestCase):
         web = InstitutionWeb()
         with patch.object(server, "DEEPSEEK", FakePlanner()), patch.object(server, "WEB", web):
             evidence, info = server.retrieve_web_evidence("民法典第368条，需要四校高校老师的讲解")
-        self.assertEqual(len(web.queries), 5)  # 四校各一次 + 兜底全网一次
+        self.assertEqual(len(web.queries), 13)  # 四校各三次 + 普通全网兜底一次
         self.assertTrue(info["fallback_general"])
         self.assertTrue(all(not item["found"] for item in info["institution_results"]))
         self.assertEqual(len(evidence), 1)
@@ -224,7 +224,8 @@ class WebRetrievalTest(unittest.TestCase):
         self.assertIn("第二十二条", variants)
         planned = ["民法典 第22条 北京大学法学院 教授 论文"]
         retries = server.institution_retry_queries(question, "北京大学法学院", planned)
-        self.assertTrue(any("第二十二条" in query for query in retries))
+        self.assertEqual(len(retries), 2)
+        self.assertTrue(any("学报" in query or "期刊" in query for query in retries))
         self.assertTrue(all("北京大学法学院" in query for query in retries))
         self.assertEqual(server.TARGET_INSTITUTIONS, ["中国政法大学", "西北政法大学", "北京大学法学院", "清华大学法学院"])
         self.assertFalse(any("人民大学" in institution for institution in server.TARGET_INSTITUTIONS))
@@ -245,8 +246,8 @@ class WebRetrievalTest(unittest.TestCase):
         self.assertEqual(len(web.queries), 4)
         self.assertFalse(any(event["stage"] == "retry" for event in info["events"]))
 
-    def test_each_institution_searches_exactly_once(self):
-        """四校挂在后台，宁可这次没命中，也不要逐校重试拖慢整条链路。"""
+    def test_only_unmatched_institutions_execute_bounded_retries(self):
+        """每校独立停止：已命中一次结束，未命中最多三次。"""
         class CountWeb(InstitutionWeb):
             def __init__(self):
                 super().__init__({"中国政法大学"})
@@ -264,10 +265,10 @@ class WebRetrievalTest(unittest.TestCase):
         web = CountWeb()
         with patch.object(server, "DEEPSEEK", FakePlanner()), patch.object(server, "WEB", web):
             evidence, info = server.retrieve_web_evidence("民法典第368条，需要四校高校老师的讲解")
-        self.assertTrue(all(count == 1 for count in web.calls.values()))
+        self.assertEqual(web.calls, {"中国政法大学": 1, "西北政法大学": 3, "北京大学法学院": 3, "清华大学法学院": 3})
         self.assertEqual([item["institution"] for item in evidence], ["中国政法大学"])
         self.assertTrue(info["institution_results"][0]["found"])
-        self.assertFalse(any(event["stage"] == "retry" for event in info["events"]))
+        self.assertTrue(any(event["stage"] == "retry" for event in info["events"]))
 
     def test_irrelevant_professor_biography_is_rejected(self):
         info = {"events": []}
@@ -387,20 +388,21 @@ class WebRetrievalTest(unittest.TestCase):
                 "请查找民法典第368条居住权登记的公开网页资料",
                 initial_query="民法典 第368条 居住权 登记",
             )
-        self.assertEqual(web.queries, ["民法典 第368条 居住权 登记"])
+        self.assertEqual(web.queries[0], "民法典 第368条 居住权 登记")
+        self.assertLessEqual(len(web.queries), 3)
         self.assertEqual(len(evidence), 1)
         self.assertTrue(any(event["stage"] == "plan" and "复用" in event.get("reason", "")
                             for event in info["events"]))
 
-    def test_general_search_stops_after_first_successful_query(self):
+    def test_general_search_expands_when_first_query_has_only_one_source(self):
         class MultiQueryPlanner:
             def plan_web_queries(self, _question, institution=None):
-                return ["第一条有效查询", "不应执行的备选查询"]
+                return ["第一条有效查询", "用于补充来源的备选查询"]
 
         web = FakeWeb()
         with patch.object(server, "DEEPSEEK", MultiQueryPlanner()), patch.object(server, "WEB", web):
             evidence, _info = server.retrieve_web_evidence("请查找民法典第368条居住权登记的公开网页资料")
-        self.assertEqual(web.queries, ["第一条有效查询"])
+        self.assertEqual(web.queries, ["第一条有效查询", "用于补充来源的备选查询"])
         self.assertEqual(len(evidence), 1)
 
     def test_case_institution_search_is_bounded_and_skips_general_fallback(self):
@@ -432,12 +434,13 @@ class WebRetrievalTest(unittest.TestCase):
                 initial_query="北大杀母案 吴谢宇 判决",
             )
         self.assertEqual(evidence, [])
-        self.assertEqual(len(web.queries), 4)
-        self.assertTrue(all("杀母案 吴谢宇" in query for query in web.queries))
+        self.assertEqual(len(web.queries), 8)
+        self.assertTrue(all("吴谢宇" in query for query in web.queries))
+        self.assertTrue(any("北大杀母案" in query for query in web.queries))
         self.assertFalse(any("判决" in query for query in web.queries))
         self.assertFalse(info["fallback_general"])
         self.assertEqual([item["candidate_count"] for item in info["institution_results"]], [10, 10, 10, 10])
-        self.assertEqual([item["content_fetched_count"] for item in info["institution_results"]], [3, 3, 3, 3])
+        self.assertEqual([item["content_fetched_count"] for item in info["institution_results"]], [10, 10, 10, 10])
         self.assertIn("不追加其他网页冒充四校观点", info["notice"])
 
 
