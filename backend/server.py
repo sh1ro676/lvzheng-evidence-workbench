@@ -990,6 +990,9 @@ def remember_identities(pages: list[tuple[dict, str, dict]], institution: str,
                 sources.append(record)
 
 
+UNCONFIRMED_SCHOOL_AFFILIATION = "网页未明确体现目标机构教师关联，且没有可链接的官方身份正文"
+
+
 def page_evidence(search_item: dict, fetched: dict, query: str, question: str | None,
                   institution: str | None = None, case_mode: bool = False,
                   case_core: str = "", entity: str = "", identities: dict | None = None,
@@ -1017,7 +1020,7 @@ def page_evidence(search_item: dict, fetched: dict, query: str, question: str | 
                 if identities and name in identities:
                     identity_sources.extend(identities[name])
             if not identity_sources:
-                return None, "网页未明确体现目标机构教师关联，且没有可链接的官方身份正文"
+                return None, UNCONFIRMED_SCHOOL_AFFILIATION
     if case_mode:
         error = case_opinion_relevance_error(search_item, fetched, case_core, entity)
         if error:
@@ -1050,6 +1053,47 @@ def page_evidence(search_item: dict, fetched: dict, query: str, question: str | 
         item["identity_sources"] = identity_sources
         item["source_notice"] += "按本文署名与另附高校网页的同名任职记载交叉关联，同名歧义仍需复核；身份页不证明本页观点，也不提高本页证据等级。"
     return item, None
+
+
+def school_research_leads(pages: list[tuple[dict, str, dict]], question: str, institution: str,
+                          case_mode: bool, case_core: str, identities: dict,
+                          topic_context: str) -> list[dict]:
+    """Show relevant fetched pages awaiting affiliation checks, outside the evidence list."""
+    leads = []
+    seen_urls = set()
+    for item, query, page in pages:
+        _, error = page_evidence(item, page, query, question, institution, case_mode,
+                                  case_core, identities=identities, topic_context=topic_context)
+        if error != UNCONFIRMED_SCHOOL_AFFILIATION:
+            continue
+        # The affiliation check can fail before the topic and material-type checks.
+        expanded_query = f"{query} {topic_context}"
+        terms = topic_query_terms(question, expanded_query)
+        labels = article_label_variants(question)
+        if page_relevance_error(question, item, page, expanded_query):
+            continue
+        if case_mode:
+            if case_opinion_relevance_error(item, page, case_core):
+                continue
+            terms = case_relevance_terms(case_core)
+        elif not article_numbers(question) and not any(term in fetched_page_text(item, page) for term in terms):
+            continue
+        if page["url"] in seen_urls:
+            continue
+        seen_urls.add(page["url"])
+        content = page["content"]
+        offsets = [content.find(term) for term in terms + labels]
+        start = max(0, min((offset for offset in offsets if offset >= 0), default=0) - 45)
+        end = start + 120
+        leads.append({
+            "title": page["title"][:160] or "网页正文",
+            "source_url": page["url"],
+            "excerpt": ("…" if start else "") + content[start:end] + ("…" if end < len(content) else ""),
+            "search_institution": institution,
+        })
+        if len(leads) == 2:
+            break
+    return leads
 
 
 def fetch_candidates(candidates: list[tuple[dict, str]], info: dict, institution: str | None = None,
@@ -1268,6 +1312,10 @@ def _search_one_institution(question: str, institution: str, base_query: str = "
     except Exception as error:  # noqa: BLE001
         local["failure"] = str(error)
         local["events"].append({"stage": "filter", "ok": False, "error": f"单校检索停止：{error}"})
+    if not evidence:
+        local["research_leads"] = school_research_leads(
+            pages, question, institution, case_mode, core, identities, topic_context,
+        )
     return evidence, local
 
 
@@ -1277,6 +1325,8 @@ def _merge_institution_info(info: dict, institution: str, evidence: list[dict], 
                 "content_fetched_count", "rejected_count"):
         info[key] += local.get(key, 0)
     info["events"].extend(local["events"])
+    if local.get("research_leads"):
+        info.setdefault("research_leads", []).extend(local["research_leads"])
     empty_reason = ("全部查询后仍未获得同时满足案件主题、观点内容与机构关联的有效正文"
                     if local.get("case_mode") else "全部查询后仍未获得同时满足法条相关性与机构关联的有效正文")
     info["institution_results"].append({

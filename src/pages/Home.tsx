@@ -7,6 +7,7 @@ import { AnswerText } from '@/components/AnswerText'
 import { EvidencePanel } from '@/components/EvidencePanel'
 import { LibraryView } from '@/components/LibraryView'
 import { ModelDialog } from '@/components/ModelDialog'
+import { ResearchLeads } from '@/components/ResearchLeads'
 import { askLawStream, askSchools, getDocuments, getHealth, getProviders } from '@/lib/api'
 import { conversationHistory, mergeSchoolResponse } from '@/lib/conversation'
 import type { AgentStage } from '@/lib/api'
@@ -301,6 +302,10 @@ export default function Home() {
                               webSearch={message.schoolRetrieval ?? message.retrieval?.web_search}
                               onCitation={(citationId) => showCitation(citationId, message.evidence ?? [], message.id)}
                             />
+                            <ResearchLeads leads={[
+                              ...(message.retrieval?.web_search?.research_leads ?? []),
+                              ...(message.schoolRetrieval?.research_leads ?? []),
+                            ]} />
                             {message.retrieval?.web_search?.enabled && (
                               <details className="verification-details web-search-details">
                                 <summary>联网检索记录 · {message.retrieval.web_search.fetched_count} 个有效网页 · {message.retrieval.web_search.search_count} 次搜索</summary>

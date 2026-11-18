@@ -80,6 +80,9 @@ try {
       return route.fulfill({ json: {
         status: 'verification_failed', section: `${question}补充观点。【证据1】`,
         evidence: [evidence(`${question}学校证据`)], verification: check(false),
+        retrieval: { web_search: { enabled: true, queries: [], events: [], fetched_count: 1, search_count: 2,
+          research_leads: [{ title: '未确认任职的相关网页', source_url: 'https://example.com/lead',
+            excerpt: '这是需要人工核对的网页摘录。', search_institution: '北京大学法学院' }] } },
       } }).catch(() => {})
     }
     return route.fulfill({ status: 404, json: {} })
@@ -115,6 +118,16 @@ try {
   await page.locator('.message.assistant').first().getByRole('button', { name: '查看证据 2', exact: true }).click()
   await page.locator('.evidence-panel').getByText('第一问学校证据正文', { exact: true }).first().waitFor()
   report.checks.push('shifted_citation_opens_correct_evidence')
+  const firstAnswer = page.locator('.message.assistant').first()
+  await firstAnswer.getByText('待核线索 · 1 份相关网页', { exact: true }).click()
+  await firstAnswer.getByText(/尚无法核实作者与检索院校的任职关系/).waitFor()
+  await firstAnswer.getByText('这是需要人工核对的网页摘录。', { exact: true }).waitFor()
+  const link = firstAnswer.getByRole('link', { name: '未确认任职的相关网页' })
+  assert.equal(await link.getAttribute('href'), 'https://example.com/lead')
+  assert.equal(await page.locator('.evidence-panel').getByText('未确认任职的相关网页').count(), 0)
+  assert.equal(await firstAnswer.getByRole('button', { name: '查看证据 3' }).count(), 0)
+  report.checks.push('research_leads_stay_outside_citable_evidence')
+  await page.screenshot({ path: `${outputDir}/research-leads.png`, fullPage: true })
   await page.getByRole('button', { name: '新建法律任务' }).click()
   gates.get('第二问')()
   await submit('新任务')

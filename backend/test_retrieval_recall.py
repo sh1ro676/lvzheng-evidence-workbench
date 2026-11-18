@@ -107,6 +107,25 @@ class RetrievalRecallTest(unittest.TestCase):
         self.assertEqual(evidence[0]["identity_sources"][0]["source_url"], profile_url)
         self.assertEqual(evidence[0]["evidence_tier"], "secondary_unverified")
         self.assertNotEqual(evidence[0]["text"], web.pages[profile_url]["content"])
+        self.assertFalse(info.get("research_leads"), "verified opinions should appear only as evidence")
+
+    def test_unverified_relevant_fetched_page_is_a_lead_not_a_school_hit(self):
+        url = "https://example.com/opinion"
+        web = FakeWeb([[result("opinion"), result("wrong-law"), result("unreadable")]], {
+            url: page("成年监护评论", "正文讨论成年监护与行为能力宣告。"),
+            "https://example.com/wrong-law": page("刑法第22条", "该条讨论犯罪预备。"),
+        })
+        with patch.object(server, "WEB", web):
+            evidence, local = server._search_one_institution(QUESTION, SCHOOL, QUERY)
+        info = dict(queries=[], events=[], institution_results=[], search_count=0, candidate_count=0,
+                    fetch_attempt_count=0, content_fetched_count=0, rejected_count=0)
+        server._merge_institution_info(info, SCHOOL, evidence, local)
+        self.assertEqual(evidence, [])
+        self.assertFalse(info["institution_results"][0]["found"])
+        self.assertEqual(info["research_leads"], [{
+            "title": "成年监护评论", "source_url": url, "excerpt": "正文讨论成年监护与行为能力宣告。",
+            "search_institution": SCHOOL,
+        }])
 
     def test_identity_later_in_same_batch_can_validate_earlier_opinion(self):
         profile_url = "https://law.example.edu.cn/profile"

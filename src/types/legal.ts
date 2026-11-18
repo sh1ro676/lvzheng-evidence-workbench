@@ -78,6 +78,13 @@ export interface WebSearchEvent {
   query_source?: string
 }
 
+export interface ResearchLead {
+  title: string
+  source_url: string
+  excerpt: string
+  search_institution: string
+}
+
 export interface WebSearchInfo {
   enabled: boolean
   provider: 'deepseek_web'
@@ -90,6 +97,7 @@ export interface WebSearchInfo {
   rejected_count?: number
   fetched_count: number
   events: WebSearchEvent[]
+  research_leads?: ResearchLead[]
   queried_at: string
   mode?: 'four_institutions' | 'general'
   fallback_general?: boolean

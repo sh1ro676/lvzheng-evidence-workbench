@@ -192,6 +192,11 @@ kbd { padding: 2px 4px; border: 1px solid var(--line); border-radius: 4px; backg
 .verification-details li { display: flex; align-items: flex-start; gap: 8px; }
 .verification-details li svg { flex: 0 0 auto; margin-top: 3px; color: var(--success); }
 .verification-details li strong { display: block; color: var(--ink); font-size: 12px; }
+.research-leads-warning { padding: 9px 10px; border-radius: 7px; color: var(--warning); background: var(--warning-soft); line-height: 1.65; }
+.research-leads li { display: block; overflow-wrap: anywhere; }
+.research-leads li a { color: var(--accent); font-weight: 600; text-decoration: underline; }
+.research-leads li p { margin: 4px 0; }
+.research-leads blockquote { margin: 4px 0 8px; padding-left: 9px; border-left: 2px solid var(--line); line-height: 1.65; white-space: pre-wrap; }
 .loading-state { display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-raised); }
 .loading-state svg { color: var(--accent); }
 .loading-state strong, .loading-state span { display: block; }
