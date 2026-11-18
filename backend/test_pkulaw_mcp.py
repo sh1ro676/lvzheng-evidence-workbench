@@ -214,12 +214,12 @@ class PkulawMCPTest(unittest.TestCase):
         self.assertEqual(response["evidence"][0]["article_label"], "第7条")
 
     def test_explicit_other_law_never_matches_civil_code_article(self):
-        from server import retrieve_evidence
-        evidence, _ = retrieve_evidence("《刑法》第三条", source="local")
+        from server import STORE
+        evidence = STORE.search("《刑法》第三条")
         self.assertEqual(len(evidence), 1)
         self.assertEqual(evidence[0]["document_id"], "criminal-law")
         self.assertEqual(evidence[0]["article_label"], "第三条")
-        civil, _ = retrieve_evidence("《民法典》第一千一百六十五条", source="local")
+        civil = STORE.search("《民法典》第一千一百六十五条")
         self.assertEqual(civil[0]["article_label"], "第一千一百六十五条")
 
 

@@ -1,4 +1,4 @@
-import type { ChatResponse, ChatTurn, Evidence, Health, LegalDocument, ProviderStatus, SchoolResponse } from '@/types/legal'
+import type { ChatResponse, ChatTurn, Evidence, Health, Textbook, ProviderStatus, SchoolResponse } from '@/types/legal'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -14,18 +14,17 @@ export function getHealth() {
   return request<Health>('/api/health')
 }
 
-export function getDocuments() {
-  return request<{ documents: LegalDocument[] }>('/api/documents')
+export function getTextbooks() {
+  return request<{ books: Textbook[] }>('/api/expert-library/books')
 }
 
 export function getProviders() {
   return request<{ providers: ProviderStatus[] }>('/api/providers')
 }
 
-export function searchLaw(question: string, documentId?: string) {
-  const params = new URLSearchParams({ q: question })
-  if (documentId) params.set('document_id', documentId)
-  return request<{ evidence: Evidence[] }>(`/api/search?${params}`)
+export function searchTextbook(query: string, bookId: string) {
+  const params = new URLSearchParams({ q: query, book_id: bookId })
+  return request<{ evidence: Evidence[] }>(`/api/expert-library/search?${params}`)
 }
 
 export function askLaw(question: string, webSearch = true, documentId?: string, history: ChatTurn[] = []) {

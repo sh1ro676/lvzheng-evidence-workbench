@@ -64,10 +64,11 @@ class RetrievalRoutingTest(unittest.TestCase):
         self.assertIn("仍由模型", retrieval["notice"])
         local.assert_not_called()
 
-    def test_forced_local_source_is_available_for_library_only(self):
+    def test_forced_local_statute_source_is_rejected(self):
         with patch.object(server.STORE, "search", return_value=[]) as local:
-            server.retrieve_evidence("民事责任和刑事责任的区别", source="local")
-        local.assert_called_once()
+            with self.assertRaisesRegex(ValueError, "只支持北大法宝"):
+                server.retrieve_evidence("民事责任和刑事责任的区别", source="local")
+        local.assert_not_called()
 
     def test_composite_sentencing_question_retrieves_all_core_issues(self):
         queries = server.criminal_core_queries("未成年人，并且偷盗，强奸，大概会怎么判刑")

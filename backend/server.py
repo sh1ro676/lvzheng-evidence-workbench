@@ -147,14 +147,14 @@ def _book_index():
     """懒加载教材索引；没有索引文件时返回 None，不影响其他检索。"""
     global _BOOK_CACHE
     if _BOOK_CACHE is None:
-        try:
-            from book_index import BookIndex, load
-            chunks = []
-            for path in sorted((ROOT / "data" / "books").glob("*.jsonl")):
+        from book_index import BookIndex, load
+        chunks = []
+        for path in sorted((ROOT / "data" / "books").glob("*.jsonl")):
+            try:
                 chunks.extend(load(path))
-            _BOOK_CACHE = BookIndex(chunks) if chunks else False
-        except Exception:  # noqa: BLE001
-            _BOOK_CACHE = False
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                print(f"跳过不可读教材索引 {path.name}：{type(error).__name__}", file=sys.stderr)
+        _BOOK_CACHE = BookIndex(chunks) if chunks else False
     return _BOOK_CACHE or None
 
 
@@ -434,13 +434,9 @@ def case_articles(question: str, evidence: list[dict], limit: int = 3) -> list[d
 
 
 def retrieve_evidence(question: str, document_id: str | None = None, source: str = "auto") -> tuple[list[dict], dict]:
-    """主问答只使用北大法宝在线证据；本地文库仅在用户明确查文库时使用。"""
-    if source not in {"auto", "local", "pkulaw"}:
-        raise ValueError("不支持的数据源")
-    if source == "local":
-        evidence = STORE.search(question, document_id)
-        return evidence, {"source": "local_official", "provider": "flk", "cached": True,
-                          "notice": "文库页面的显式本地检索，不作为主问答的证据来源"}
+    """所有运行时法条检索都走北大法宝。保留旧调用的 document_id 参数。"""
+    if source not in {"auto", "pkulaw"}:
+        raise ValueError("法条检索只支持北大法宝")
 
     notice = "北大法宝未配置，本次由模型直接回答"
     if PKULAW.configured:
@@ -547,18 +543,25 @@ def law_title_aliases(question: str) -> list[str]:
 
 
 def article_planning_context(question: str) -> str:
-    """Ground topic extraction in the local official article instead of hard-coded topics."""
+    """复用北大法宝精确条文，为联网检索提取主题。"""
     aliases = law_title_aliases(question)
-    if not aliases or not ARTICLE_QUERY_RE.search(question):
+    numbers = article_numbers(question)
+    if not aliases or not numbers or not PKULAW.configured:
+        return question
+    query = f"《{aliases[0]}》第{numbers[0]}条"
+    try:
+        evidence, _ = timed_call(lambda: retrieve_evidence(query), FETCH_TIMEOUT)
+    except TimeoutError:
         return question
     matches = [
-        item for item in STORE.exact_matches(question)
+        item for item in evidence
         if any(alias in item["document_title"] for alias in aliases)
+        and evidence_covers([item], numbers[:1])
     ]
     if not matches:
         return question
     context = "\n".join(f"{item['article_label']}：{item['text']}" for item in matches)[:1800]
-    return f"{question}\n\n本地官方条文（仅用于提炼检索主题，不作为网页证据）：\n{context}"
+    return f"{question}\n\n北大法宝条文（仅用于提炼检索主题，不作为网页证据）：\n{context}"
 
 
 ACADEMIC_PAPER_RE = re.compile(
@@ -690,7 +693,7 @@ def plan_topic_retry(question: str, info: dict, institution: str, previous_queri
     """Diagnostic rewrite helper; live retrieval reuses the initial multi-query plan."""
     retry_input = (
         f"{question}\n\n此前实际查询均未获得有效证据：{'；'.join(previous_queries)}\n"
-        "这一次只规划一个明显不同的主题查询：优先使用本地法条原文中的核心制度、行为或法律效果术语，"
+        "这一次只规划一个明显不同的主题查询：优先使用已提供的法条原文中的核心制度、行为或法律效果术语，"
         "结合目标机构和论文、期刊、教授等限定，不要只改变条号的数字或中文写法，不要重复此前查询。"
     )
     try:
@@ -1550,8 +1553,6 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "model_configured": DEEPSEEK.configured,
                 "model": DEEPSEEK.model,
-                "document_count": len(STORE.documents),
-                "article_count": len(STORE.articles),
                 "pkulaw_configured": PKULAW.configured,
                 "web_search_configured": WEB.configured,
             })
@@ -1559,21 +1560,29 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/providers":
             self.send_json({"providers": [PKULAW.status()]})
             return
-        if path == "/api/documents":
-            self.send_json({"documents": STORE.document_list()})
+        if path == "/api/expert-library/books":
+            index = _book_index()
+            self.send_json({"books": index.catalog() if index else []})
             return
-        match = re.fullmatch(r"/api/documents/([^/]+)/articles/([^/]+)", path)
-        if match:
-            article = STORE.get_article(match.group(1), match.group(2))
-            if article:
-                self.send_json(article)
-            else:
-                self.send_json({"error": "未找到条文"}, 404)
+        if path == "/api/expert-library/search":
+            query = params.get("q", [""])[0].strip()
+            book_id = params.get("book_id", [""])[0]
+            if not query or len(query) > 300 or not book_id:
+                self.send_json({"error": "请选择教材，并输入不超过 300 字的检索内容"}, 400)
+                return
+            index = _book_index()
+            if not index or book_id not in index.books:
+                self.send_json({"error": "未找到该教材，请重新载入专家库"}, 404)
+                return
+            from book_index import to_evidence
+            chunks = index.library_search(book_id, query)
+            evidence = [to_evidence(chunk, offset) for offset, chunk in enumerate(chunks, start=1)]
+            self.send_json({"evidence": numbered_evidence(evidence)})
             return
         if path in {"/api/search", "/api/legal/search"}:
             query = params.get("q", [""])[0].strip()
             document_id = params.get("document_id", [None])[0]
-            source = params.get("source", ["local" if path == "/api/search" else "auto"])[0]
+            source = params.get("source", ["auto"])[0]
             if not query:
                 self.send_json({"error": "请输入检索内容"}, 400)
                 return
@@ -1841,7 +1850,7 @@ def run() -> None:
     host = os.environ.get("API_HOST", "127.0.0.1")
     port = int(os.environ.get("API_PORT", "8787"))
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"法律证据 API 已启动：http://{host}:{port}；条文数：{len(STORE.articles)}；DeepSeek：{'已配置' if DEEPSEEK.configured else '未配置'}", flush=True)
+    print(f"法律证据 API 已启动：http://{host}:{port}；北大法宝：{'已配置' if PKULAW.configured else '未配置'}；DeepSeek：{'已配置' if DEEPSEEK.configured else '未配置'}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

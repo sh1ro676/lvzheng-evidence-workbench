@@ -33,6 +33,21 @@ try {
     headless: true,
   })
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, permissions: ['clipboard-read', 'clipboard-write'] })
+  const fixtureBooks = ['上册', '下册'].map((volume, index) => ({
+    book_id: `book-${index}`, title: `刑法学（第六版）· ${volume}`, source_name: '张明楷《刑法学》',
+    page_count: 1, chunk_count: 1,
+  }))
+  await context.route('**/api/expert-library/books', (route) => route.fulfill({ json: { books: fixtureBooks } }))
+  await context.route('**/api/expert-library/search?*', (route) => {
+    const bookId = new URL(route.request().url()).searchParams.get('book_id')
+    const book = fixtureBooks.find((entry) => entry.book_id === bookId)
+    return route.fulfill({ json: { evidence: book ? [{
+      citation_id: 1, document_id: book.book_id, article_id: 'p418', document_title: book.title,
+      article_label: '书内 p397（PDF p418）', section_path: [book.title], provider: 'textbook',
+      text: '用于验证教材检索的测试段落。', source_name: book.source_name, source_url: '',
+      published_at: '2021', effective_at: '', match_type: 'textbook',
+    }] : [] } })
+  })
   context.setDefaultTimeout(60000)
   context.setDefaultNavigationTimeout(90000)
   const page = await context.newPage()
@@ -60,20 +75,12 @@ try {
   await page.getByText('DeepSeek 联网搜索', { exact: true }).waitFor()
   await page.getByRole('button', { name: '知道了' }).click()
 
-  await page.getByRole('button', { name: '法律文库', exact: true }).click()
-  const documentTabCount = await page.locator('.document-tab').count()
-  if (documentTabCount !== 6) throw new Error(`文库应展示六部法律，实际为 ${documentTabCount}`)
-  await page.getByRole('button', { name: '刑法', exact: true }).click()
-  await page.locator('.document-heading-copy h1').getByText('中华人民共和国刑法', { exact: true }).waitFor()
-  await page.getByRole('textbox', { name: '检索法律文库' }).fill('第 1 条')
-  await page.getByRole('button', { name: '检索原文' }).click()
-  await page.locator('.evidence-item').first().getByText('第一条', { exact: true }).waitFor({ timeout: 15000 })
-  await page.locator('.evidence-item').first().getByText(/中华人民共和国刑法/).waitFor()
-  await page.getByRole('button', { name: '民法典', exact: true }).click()
-  await page.locator('.document-heading-copy h1').getByText('中华人民共和国民法典', { exact: true }).waitFor()
-  await page.getByRole('textbox', { name: '检索法律文库' }).fill('离婚冷静期')
-  await page.getByRole('button', { name: '检索原文' }).click()
-  await page.locator('.evidence-item').first().getByText('第一千零七十七条', { exact: true }).waitFor({ timeout: 15000 })
+  await page.getByRole('button', { name: '本地专家库', exact: true }).click()
+  await page.getByRole('button', { name: fixtureBooks[0].title, exact: true }).click()
+  await page.getByRole('heading', { name: fixtureBooks[0].title, exact: true }).waitFor()
+  await page.getByRole('textbox', { name: '检索教材' }).fill('书内 397')
+  await page.getByRole('button', { name: '检索教材', exact: true }).click()
+  await page.locator('.textbook-location').getByText('书内 p397（PDF p418）', { exact: true }).waitFor()
   await page.screenshot({ path: `${outputDir}/desktop-library.png`, fullPage: true })
 
   const mobile = await context.newPage()
@@ -87,10 +94,9 @@ try {
   await mobile.getByRole('button', { name: '发送任务' }).click()
   await mobile.locator('.evidence-item').first().getByText('第一千一百六十五条', { exact: true }).waitFor({ timeout: 15000 })
   await mobile.screenshot({ path: `${outputDir}/mobile-answer.png`, fullPage: true })
-  await mobile.getByRole('button', { name: '文库', exact: true }).click()
-  if (await mobile.locator('.document-tab').count() !== 6) throw new Error('手机文库未展示六部法律')
-  await mobile.getByRole('button', { name: '刑诉法解释', exact: true }).click()
-  await mobile.locator('.document-heading-copy h1').getByText('最高人民法院关于适用《中华人民共和国刑事诉讼法》的解释', { exact: true }).waitFor()
+  await mobile.getByRole('button', { name: '本地专家库', exact: true }).click()
+  await mobile.getByRole('button', { name: fixtureBooks[1].title, exact: true }).click()
+  await mobile.getByRole('heading', { name: fixtureBooks[1].title, exact: true }).waitFor()
   await mobile.screenshot({ path: `${outputDir}/mobile-library.png`, fullPage: true })
   const mobileOverflow = await mobile.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
 
