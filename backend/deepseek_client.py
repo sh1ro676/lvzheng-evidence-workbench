@@ -60,24 +60,33 @@ class DeepSeekError(RuntimeError):
 class DeepSeekClient:
     def __init__(self):
         self.api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-        self.model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+        self.model = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
         self.base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+        # 思考模式默认开在 deepseek-flash 上；这里显式控制，避免"以为关了其实开着"。
+        flag = os.environ.get("DEEPSEEK_THINKING", "off").strip().lower()
+        self.answer_thinking = flag not in {"off", "disabled", "false", "0", "no", "none", ""}
+        self.reasoning_effort = os.environ.get("DEEPSEEK_REASONING_EFFORT", "high").strip().lower()
 
     @property
     def configured(self) -> bool:
         return bool(self.api_key)
 
+    def _thinking_body(self, enabled: bool) -> dict:
+        """按调用类型显式开关思考模式；关闭时不传 effort，保持最省。"""
+        if not enabled:
+            return {"thinking": {"type": "disabled"}}
+        return {"thinking": {"type": "enabled"}, "reasoning_effort": self.reasoning_effort}
+
     def plan_route(self, question: str, timeout: float | None = None,
                    history: list[dict] | None = None) -> dict:
         """第一环：让模型决定该用哪个数据源、查什么。
 
-        非思考模型只输出一份小 JSON；思考模型的推理也计入 max_tokens，
-        必须留出足够的思考与最终 JSON 空间，避免内容尚未产出就被截断。
+        路由只需要一份小 JSON，思考模式的推理会占用 max_tokens 并显著拖慢首屏，
+        因此这里强制关闭思考；万一被截断，退化为重试而不是让整题失败。
         """
         if not self.configured:
             raise DeepSeekError("未配置 DEEPSEEK_API_KEY")
-        thinking = "reasoner" in self.model.lower()
-        request_timeout = timeout if timeout is not None else (90 if thinking else 12)
+        request_timeout = timeout if timeout is not None else 20
         instruction = (
             "你是法律检索调度器。根据用户问题，决定先查哪类数据源，只输出一个 JSON 对象：\n"
             '{"kind":"statute|case|concept",'
@@ -103,9 +112,10 @@ class DeepSeekClient:
                          *normalize_history(history),
                          {"role": "user", "content": question[:1500]}],
             "temperature": 0.0,
-            "max_tokens": 4096 if thinking else 500,
+            "max_tokens": 800,
             "response_format": {"type": "json_object"},
             "stream": False,
+            **self._thinking_body(False),
         }
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
@@ -191,6 +201,9 @@ class DeepSeekClient:
             "temperature": 0.1,
             "max_tokens": 700,
             "stream": False,
+            # 带 tools 的思考模式要求回传 reasoning_content，这里不值得为此增加状态，
+            # 检索规划本身是轻任务，直接关掉思考。
+            **self._thinking_body(False),
         }, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
@@ -291,8 +304,10 @@ class DeepSeekClient:
         if not self.configured:
             raise DeepSeekError("未配置 DEEPSEEK_API_KEY")
         messages, _ = self._messages(question, evidence, system_prompt, plain=True, history=history)
+        thinking = self.answer_thinking
         body = {"model": self.model, "messages": messages, "temperature": 0.1,
-                "max_tokens": 5200, "stream": True}
+                "max_tokens": 12000 if thinking else 5200, "stream": True,
+                **self._thinking_body(thinking)}
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -342,12 +357,14 @@ class DeepSeekClient:
                 f"引用编号必须有效；使用检索资料时在相应句段标注，不要给每句话机械添加引用：\n{notes}"
             )
         messages[-1]["content"] = user_prompt
+        thinking = self.answer_thinking
         payload = json.dumps({
             "model": self.model,
             "messages": messages,
             "temperature": 0.1,
-            "max_tokens": 5200,
+            "max_tokens": 12000 if thinking else 5200,
             "stream": False,
+            **self._thinking_body(thinking),
         }).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
@@ -360,7 +377,7 @@ class DeepSeekClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=network_timeout(100)) as response:
+            with urllib.request.urlopen(request, timeout=network_timeout(180 if thinking else 100)) as response:
                 result = json.loads(response.read().decode("utf-8"))
             content = result["choices"][0]["message"]["content"]
         except urllib.error.HTTPError as error:
@@ -477,3 +494,4 @@ def verify_answer(answer: str, evidence: list[dict]) -> dict:
         "checks": checks,
         "_uncovered_segments": [],
     }
+

@@ -196,10 +196,11 @@ class WebRetrievalTest(unittest.TestCase):
         with patch("urllib.request.urlopen", return_value=FakeResponse(payload)):
             self.assertEqual(client.plan_web_queries("测试"), ["民法典 第368条 李永军", "居住权 登记 中国政法大学"])
 
-    def test_thinking_route_reserves_reasoning_tokens_and_timeout(self):
+    def test_route_always_disables_thinking_for_fast_json(self):
+        """路由只要一份小 JSON：思考模式会拖慢首屏并挤占 max_tokens，必须显式关闭。"""
         client = DeepSeekClient()
         client.api_key = "test"
-        client.model = "deepseek-reasoner"
+        client.model = "deepseek-flash"
         observed = {}
 
         def respond(request, timeout):
@@ -213,9 +214,35 @@ class WebRetrievalTest(unittest.TestCase):
 
         with patch("urllib.request.urlopen", side_effect=respond):
             plan = client.plan_route("清华大学教授怎么看吴谢宇案")
-        self.assertEqual(observed["body"]["max_tokens"], 4096)
-        self.assertEqual(observed["timeout"], 90)
+        self.assertEqual(observed["body"]["thinking"], {"type": "disabled"})
+        self.assertNotIn("reasoning_effort", observed["body"])
+        self.assertEqual(observed["body"]["max_tokens"], 800)
+        self.assertLessEqual(observed["timeout"], 20)
         self.assertEqual(plan["web_query"], "清华大学 吴谢宇案 教授 评论")
+
+    def test_answer_generation_follows_thinking_switch(self):
+        """正文生成按 DEEPSEEK_THINKING 决定是否开思考，并相应放宽 max_tokens。"""
+        client = DeepSeekClient()
+        client.api_key = "test"
+        captured = {}
+
+        def respond(request, timeout):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse({"choices": [{"message": {"content": json.dumps({"answer": "答复", "unresolved": []}, ensure_ascii=False)}}]})
+
+        client.answer_thinking = True
+        client.reasoning_effort = "high"
+        with patch("urllib.request.urlopen", side_effect=respond):
+            client.generate("测试", [])
+        self.assertEqual(captured["body"]["thinking"], {"type": "enabled"})
+        self.assertEqual(captured["body"]["reasoning_effort"], "high")
+        self.assertGreaterEqual(captured["body"]["max_tokens"], 12000)
+
+        client.answer_thinking = False
+        with patch("urllib.request.urlopen", side_effect=respond):
+            client.generate("测试", [])
+        self.assertEqual(captured["body"]["thinking"], {"type": "disabled"})
+        self.assertEqual(captured["body"]["max_tokens"], 5200)
 
     def test_article_number_variants_and_fixed_institutions(self):
         question = "搜索《中华人民共和国民法典》第22条论文，必须是四校老师的"
