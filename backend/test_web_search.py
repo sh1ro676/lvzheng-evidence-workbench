@@ -334,14 +334,22 @@ class WebRetrievalTest(unittest.TestCase):
 
         planner = TopicPlanner()
         info = {"events": []}
-        with patch.object(server, "DEEPSEEK", planner):
+        evidence = {"document_title": "中华人民共和国民法典", "article_label": "第二十二条",
+                    "text": "不能完全辨认自己行为的成年人为限制民事行为能力人。"}
+        with patch.object(server, "DEEPSEEK", planner), patch.object(server, "PKULAW") as provider, \
+             patch.object(server.STORE, "exact_matches", side_effect=AssertionError("不读取本地法条")):
+            provider.configured = True
+            provider.search.return_value = {"evidence": [evidence], "strategy": "fatiao", "tool": "get_law_article",
+                                            "cached": False, "queried_at": ""}
             queries = server.plan_topic_retry(
                 "搜索《中华人民共和国民法典》第22条相关论文，必须是四校老师的",
                 info, "北京大学法学院", ["民法典 第22条 北京大学法学院 教授 论文"],
             )
+            provider.search.assert_called_once_with("《中华人民共和国民法典》第22条")
         self.assertEqual(queries, ["限制民事行为能力 法定代理人 北京大学法学院 教授 论文"])
         self.assertIn("此前实际查询", planner.question)
         self.assertIn("不能完全辨认自己行为", planner.question)
+        self.assertIn("北大法宝条文", planner.question)
 
 
     def test_topic_related_paper_is_explicitly_labeled(self):

@@ -106,10 +106,16 @@ export function EvidencePanel({ evidence, selectedCitationId, onSelect, onCopy, 
                 {selected && (
                   <div className="evidence-detail">
                     <dl className="source-metadata">
-                      <div><dt>{item.provider === 'deepseek_web' ? '资料状态' : '效力'}</dt><dd><span className="status-dot" />{item.status || '以来源为准'}</dd></div>
-                      {item.effect_level && <div><dt>效力级别</dt><dd>{item.effect_level}</dd></div>}
-                      <div><dt>发布日期</dt><dd>{item.published_at || '以来源为准'}</dd></div>
-                      {item.provider !== 'deepseek_web' && <div><dt>施行日期</dt><dd>{item.effective_at || '以来源为准'}</dd></div>}
+                      {isTextbook ? (
+                        item.published_at && <div><dt>出版年份</dt><dd>{item.published_at}</dd></div>
+                      ) : (
+                        <>
+                          <div><dt>{item.provider === 'deepseek_web' ? '资料状态' : '效力'}</dt><dd><span className="status-dot" />{item.status || '以来源为准'}</dd></div>
+                          {item.effect_level && <div><dt>效力级别</dt><dd>{item.effect_level}</dd></div>}
+                          <div><dt>发布日期</dt><dd>{item.published_at || '以来源为准'}</dd></div>
+                          {item.provider !== 'deepseek_web' && <div><dt>施行日期</dt><dd>{item.effective_at || '以来源为准'}</dd></div>}
+                        </>
+                      )}
                       <div><dt>来源</dt><dd>{item.source_name}</dd></div>
                     </dl>
                     {item.web_query && <div className="web-query">检索词：{item.web_query}</div>}

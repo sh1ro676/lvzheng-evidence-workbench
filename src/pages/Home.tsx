@@ -8,10 +8,10 @@ import { EvidencePanel } from '@/components/EvidencePanel'
 import { LibraryView } from '@/components/LibraryView'
 import { ModelDialog } from '@/components/ModelDialog'
 import { ResearchLeads } from '@/components/ResearchLeads'
-import { askLawStream, askSchools, getDocuments, getHealth, getProviders } from '@/lib/api'
+import { askLawStream, askSchools, getHealth, getProviders, getTextbooks } from '@/lib/api'
 import { conversationHistory, mergeSchoolResponse } from '@/lib/conversation'
 import type { AgentStage } from '@/lib/api'
-import type { AnswerStatus, ChatMessage, Evidence, Health, LegalDocument, ProviderStatus } from '@/types/legal'
+import type { AnswerStatus, ChatMessage, Evidence, Health, Textbook, ProviderStatus } from '@/types/legal'
 import '../App.css'
 
 const examples = [
@@ -43,7 +43,8 @@ export default function Home() {
   const [view, setView] = useState<'ask' | 'library'>('ask')
   const [health, setHealth] = useState<Health>()
   const [providers, setProviders] = useState<ProviderStatus[]>([])
-  const [documents, setDocuments] = useState<LegalDocument[]>([])
+  const [books, setBooks] = useState<Textbook[]>()
+  const [booksError, setBooksError] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -66,13 +67,14 @@ export default function Home() {
   const pkulaw = providers.find((provider) => provider.provider === 'pkulaw')
 
   useEffect(() => {
-    Promise.all([getHealth(), getDocuments(), getProviders()])
-      .then(([healthData, documentData, providerData]) => {
+    Promise.all([getHealth(), getProviders()])
+      .then(([healthData, providerData]) => {
         setHealth(healthData)
-        setDocuments(documentData.documents)
         setProviders(providerData.providers)
       })
       .catch(() => setToast('后端尚未连接，请确认开发服务已完整启动。'))
+    getTextbooks().then((data) => setBooks(data.books))
+      .catch(() => setBooksError('暂时无法读取教材目录，请确认后端服务已启动后刷新页面。'))
   }, [])
 
   useEffect(() => {
@@ -227,12 +229,12 @@ export default function Home() {
         <nav className="main-nav" aria-label="主导航">
           <span className="nav-caption">工作空间</span>
           <button type="button" className={view === 'ask' ? 'active' : ''} onClick={() => setView('ask')}><FileSearch size={18} />法律问答<ChevronRight size={15} /></button>
-          <button type="button" className={view === 'library' ? 'active' : ''} onClick={() => setView('library')}><Library size={18} />法律文库<ChevronRight size={15} /></button>
+          <button type="button" className={view === 'library' ? 'active' : ''} onClick={() => setView('library')}><Library size={18} />本地专家库<ChevronRight size={15} /></button>
         </nav>
         <div className="sidebar-spacer" />
         <button type="button" className="sidebar-source" onClick={() => setView('library')}>
           <span className="source-icon"><BookOpen size={17} /></span>
-          <span><small>独立法律文库</small><strong>{documents.length > 1 ? `${documents.length} 部核心法律` : documents[0]?.title.replace('中华人民共和国', '') || '正在连接'}</strong><em>{health ? `${health.article_count.toLocaleString()} 条原文可供单独核验` : '正在读取文献状态'}</em></span>
+          <span><small>教材索引</small><strong>{booksError ? '目录暂不可用' : books ? `${books.length} 册教材` : '正在读取目录'}</strong></span>
         </button>
         <div className="sidebar-foot"><ShieldCheck size={15} /><span>模型完整分析，资料辅助核验</span></div>
       </aside>
@@ -240,12 +242,12 @@ export default function Home() {
       <main className="main-workspace">
         <div className="mobile-nav">
           <div className="brand"><div className="brand-mark"><Scale size={20} /></div><strong>律途</strong></div>
-          <div><button type="button" className={view === 'ask' ? 'active' : ''} onClick={() => setView('ask')}>问答</button><button type="button" className={view === 'library' ? 'active' : ''} onClick={() => setView('library')}>文库</button></div>
+          <div><button type="button" className={view === 'ask' ? 'active' : ''} onClick={() => setView('ask')}>问答</button><button type="button" className={view === 'library' ? 'active' : ''} onClick={() => setView('library')}>本地专家库</button></div>
         </div>
         <header className="workspace-header">
           <div>
-            <div className="breadcrumb">律师研究工作台<span>/</span>{view === 'ask' ? '证据问答' : '法律文库'}</div>
-            <h1>{view === 'ask' ? '法律文献证据问答' : '官方法律文库'}</h1>
+            <div className="breadcrumb">律师研究工作台<span>/</span>{view === 'ask' ? '证据问答' : '本地专家库'}</div>
+            <h1>{view === 'ask' ? '法律文献证据问答' : '本地专家库'}</h1>
           </div>
           <div className="connection-statuses">
             <button type="button" className={`model-status provider-status ${pkulaw?.configured ? 'is-online' : ''}`} onClick={() => setModelDialogOpen(true)}>
@@ -262,7 +264,7 @@ export default function Home() {
         </header>
 
         {view === 'library' ? (
-          <LibraryView documents={documents} onCopy={copyEvidence} />
+          <LibraryView books={books} error={booksError} onCopy={copyEvidence} />
         ) : (
           <div className="research-grid">
             <section className="conversation-panel" aria-label="证据问答">

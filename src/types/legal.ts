@@ -122,8 +122,8 @@ export interface WebSearchInfo {
 }
 
 export interface RetrievalInfo {
-  source: 'local_official' | 'pkulaw' | 'none'
-  provider: 'flk' | 'pkulaw' | null
+  source: 'pkulaw' | 'none'
+  provider: 'pkulaw' | null
   strategy?: 'fatiao' | 'law_keyword' | 'law_semantic'
   tool?: string
   cached?: boolean
@@ -175,19 +175,12 @@ export interface SchoolResponse {
   retrieval?: { web_search?: WebSearchInfo }
 }
 
-export interface LegalDocument {
-  document_id: string
+export interface Textbook {
+  book_id: string
   title: string
-  category: string
-  issuing_authority: string
-  published_at: string
-  effective_at: string
-  status: string
   source_name: string
-  source_url: string
-  snapshot_sha256: string
-  article_count: number
-  source_notice: string
+  page_count: number
+  chunk_count: number
 }
 
 export interface ProviderStatus {
@@ -203,8 +196,6 @@ export interface Health {
   ok: boolean
   model_configured: boolean
   model: string
-  document_count: number
-  article_count: number
   pkulaw_configured: boolean
   web_search_configured: boolean
 }

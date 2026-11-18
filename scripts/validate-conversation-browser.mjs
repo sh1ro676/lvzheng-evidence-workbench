@@ -51,11 +51,26 @@ try {
   const errors = []
   const mainRequests = []
   const schoolRequests = []
+  const libraryRequests = []
+  const books = ['上册', '下册'].map((volume, index) => ({
+    book_id: `fixture-book-${index}`, title: `刑法学（第六版）· ${volume}`,
+    source_name: '张明楷《刑法学》（第六版）· 法律出版社', page_count: 1, chunk_count: 1,
+  }))
   page.on('pageerror', (error) => errors.push(error.message))
   await context.route('**/api/**', async (route) => {
-    const path = new URL(route.request().url()).pathname
-    if (path === '/api/health') return route.fulfill({ json: { ok: true, model_configured: true, model: 'test', document_count: 0, article_count: 0 } })
-    if (path === '/api/documents') return route.fulfill({ json: { documents: [] } })
+    const { pathname: path, searchParams } = new URL(route.request().url())
+    if (path === '/api/health') return route.fulfill({ json: { ok: true, model_configured: true, model: 'test' } })
+    if (path === '/api/expert-library/books') return route.fulfill({ json: { books } })
+    if (path === '/api/expert-library/search') {
+      const book = books.find((item) => item.book_id === searchParams.get('book_id'))
+      if (!book) return route.fulfill({ status: 404, json: { error: '测试教材不存在' } })
+      libraryRequests.push({ bookId: book.book_id, query: searchParams.get('q') })
+      return route.fulfill({ json: { evidence: [{
+        ...evidence(book.title), article_label: '书内 p397（PDF p418）',
+        provider: 'textbook', match_type: 'textbook', source_name: book.source_name, source_url: '',
+        published_at: '2021',
+      }] } })
+    }
     if (path === '/api/providers') return route.fulfill({ json: { providers: [] } })
     const body = route.request().postDataJSON()
     const question = body.question
@@ -151,6 +166,18 @@ try {
   await page.getByText('此页仅核验任职关联，观点以本条正文为准。', { exact: true }).waitFor()
   report.checks.push('independent_identity_source_link')
   await page.screenshot({ path: `${outputDir}/desktop.png`, fullPage: true })
+  await page.getByRole('button', { name: '本地专家库', exact: true }).click()
+  await page.getByRole('heading', { name: '本地专家库', exact: true }).waitFor()
+  await page.getByRole('button', { name: books[1].title, exact: true }).click()
+  await page.getByRole('textbox', { name: '检索教材' }).fill('书内 397')
+  await page.getByRole('button', { name: '检索教材', exact: true }).click()
+  await page.locator('.textbook-location').getByText('书内 p397（PDF p418）', { exact: true }).waitFor()
+  await page.locator('.source-metadata').getByText('出版年份', { exact: true }).waitFor()
+  assert.equal(await page.locator('.source-metadata').getByText('施行日期', { exact: true }).count(), 0)
+  assert.deepEqual(libraryRequests.at(-1), { bookId: books[1].book_id, query: '书内 397' })
+  assert.equal(await page.getByRole('button', { name: '民法典', exact: true }).count(), 0)
+  await page.screenshot({ path: `${outputDir}/expert-library.png`, fullPage: true })
+  report.checks.push('expert_library_lists_and_searches_imported_textbooks')
   const mobile = await context.newPage()
   mobile.on('pageerror', (error) => errors.push(error.message))
   await mobile.setViewportSize({ width: 375, height: 812 })
@@ -159,6 +186,11 @@ try {
   assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false)
   await mobile.screenshot({ path: `${outputDir}/mobile.png`, fullPage: true })
   report.checks.push('mobile_question_and_layout')
+  await mobile.getByRole('button', { name: '本地专家库', exact: true }).click()
+  await mobile.getByRole('heading', { name: books[0].title, exact: true }).waitFor()
+  assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false)
+  await mobile.screenshot({ path: `${outputDir}/expert-library-mobile.png`, fullPage: true })
+  report.checks.push('expert_library_mobile_layout')
   assert.deepEqual(errors, [])
   report.status = 'passed'
   console.log(`PASS: ${report.checks.length} browser acceptance checks`)

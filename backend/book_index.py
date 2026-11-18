@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -118,11 +119,14 @@ def tokenize(text: str) -> Counter:
 class BookIndex:
     def __init__(self, chunks: list[Chunk]):
         self.chunks = chunks
+        self.books: dict[str, list[Chunk]] = {}
         self.n = len(chunks)
         self.avg_len = sum(sum(c.tokens.values()) for c in chunks) / max(self.n, 1)
         df: Counter = Counter()
         for chunk in chunks:
             df.update(chunk.tokens.keys())
+            book_id = hashlib.sha256(chunk.book.encode("utf-8")).hexdigest()[:20]
+            self.books.setdefault(book_id, []).append(chunk)
         self.df = df
         self.k1, self.b = 1.5, 0.75
 
@@ -130,10 +134,10 @@ class BookIndex:
         df = self.df.get(term, 0)
         return math.log(1 + (self.n - df + 0.5) / (df + 0.5))
 
-    def search(self, query: str, k: int = 8) -> list[tuple[float, Chunk]]:
+    def search(self, query: str, k: int = 8, *, book_id: str | None = None) -> list[tuple[float, Chunk]]:
         terms = tokenize(query)
         scored = []
-        for chunk in self.chunks:
+        for chunk in self.chunks if book_id is None else self.books[book_id]:
             length = sum(chunk.tokens.values()) or 1
             score = 0.0
             for term, qcount in terms.items():
@@ -147,21 +151,46 @@ class BookIndex:
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return scored[:k]
 
+    def catalog(self) -> list[dict]:
+        return [
+            {"book_id": book_id, "title": chunks[0].book, "source_name": book_source(chunks[0].book),
+             "page_count": len({chunk.page for chunk in chunks}), "chunk_count": len(chunks)}
+            for book_id, chunks in sorted(self.books.items(), key=lambda entry: entry[1][0].book)
+        ]
+
+    def library_search(self, book_id: str, query: str) -> list[Chunk]:
+        chunks = self.books[book_id]
+        page = re.fullmatch(r"\s*(?P<kind>PDF|书内|第)\s*[pP]?\s*(?P<number>[0-9]{1,5})\s*页?\s*", query, re.I)
+        if page:
+            number = int(page["number"])
+            if not number:
+                return []
+            return [chunk for chunk in chunks
+                    if number == (chunk.page if page["kind"].lower() == "pdf" else chunk.printed)]
+        return [chunk for _, chunk in self.search(query, book_id=book_id)]
+
+
+def book_source(book: str) -> str:
+    if re.match(r"^(?:张明楷.{0,3})?刑法学(?:[（(]第六版[）)])?[\s·・]*(?:[上下]册?)?$", book):
+        return "张明楷《刑法学》（第六版）· 法律出版社"
+    return book
+
 
 def to_evidence(chunk: Chunk, index: int) -> dict:
     """把教材段落转成与 server 证据格式一致的字典（供生成与校验复用）。"""
     page_label = f"书内 p{chunk.printed}" if chunk.printed else f"PDF p{chunk.page}"
+    source_name = book_source(chunk.book)
     return {
         "document_id": f"book-{index}",
         "article_id": f"p{chunk.page}",
         "document_title": chunk.book,
-        "article_label": f"{page_label}（PDF p{chunk.page}）",
+        "article_label": f"{page_label}（PDF p{chunk.page}）" if chunk.printed else page_label,
         "section_path": [chunk.book, page_label],
         "text": chunk.text,
         "provider": "textbook",
-        "source_name": "张明楷《刑法学》（第六版）· 法律出版社",
+        "source_name": source_name,
         "source_url": "",
-        "published_at": "2021",
+        "published_at": "2021" if source_name != chunk.book else "",
         "effective_at": "",
         "status": "教材原文（OCR，可能有个别错字，引用前请核对纸书）",
         "source_notice": "该证据由 OCR 提取，可能存在错字或标点误差；对外引用前须与纸书第对应页核对。",
@@ -185,8 +214,11 @@ def load(path: Path) -> list[Chunk]:
         if not line.strip():
             continue
         row = json.loads(line)
-        chunk = Chunk(book=row["book"], page=row["page"], text=row["text"],
-                      printed=row.get("printed", 0))
+        book, page, text, printed = row["book"], row["page"], row["text"], row.get("printed", 0)
+        if (not isinstance(book, str) or not book.strip() or not isinstance(text, str) or not text.strip()
+                or type(page) is not int or page < 1 or type(printed) is not int or printed < 0):
+            raise ValueError("教材索引的书名、正文或页码无效")
+        chunk = Chunk(book=book, page=page, text=text, printed=printed)
         chunk.tokens = tokenize(chunk.text)
         chunks.append(chunk)
     return chunks
