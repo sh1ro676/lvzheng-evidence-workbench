@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+﻿import { useEffect, useRef, useState } from 'react'
 import {
   AlertCircle, ArrowUp, BookOpen, CheckCircle2, ChevronRight, CircleHelp,
   FileSearch, Globe, Library, LoaderCircle, Plus, Scale, ShieldCheck, Sparkles,
@@ -9,6 +9,7 @@ import { LibraryView } from '@/components/LibraryView'
 import { ModelDialog } from '@/components/ModelDialog'
 import { ResearchLeads } from '@/components/ResearchLeads'
 import { askLawStream, askSchools, getHealth, getProviders, getTextbooks } from '@/lib/api'
+import { newId } from '@/lib/id'
 import { conversationHistory, mergeSchoolResponse } from '@/lib/conversation'
 import type { AgentStage } from '@/lib/api'
 import type { AnswerStatus, ChatMessage, Evidence, Health, Textbook, ProviderStatus } from '@/types/legal'
@@ -97,10 +98,10 @@ export default function Home() {
     inFlightRef.current = true
     setView('ask')
     setInput('')
-    setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'user', content: question }])
+    setMessages((current) => [...current, { id: newId(), role: 'user', content: question }])
     setStage('planning')
     setLoading(true)
-    const assistantId = crypto.randomUUID()
+    const assistantId = newId()
     activeMessageIdRef.current = assistantId
     try {
       // 先建立空回答，阶段事件显示检索进度，正文增量到达后直接流式渲染。
@@ -169,7 +170,7 @@ export default function Home() {
       setMessages((current) => {
         const hasPlaceholder = current.some((message) => message.id === assistantId)
         if (!hasPlaceholder) {
-          return [...current, { id: crypto.randomUUID(), role: 'assistant', content, status: 'error' }]
+          return [...current, { id: newId(), role: 'assistant', content, status: 'error' }]
         }
         return current.map((message) => message.id === assistantId
           ? { ...message, content, status: 'error', following: false }
@@ -377,3 +378,4 @@ export default function Home() {
     </div>
   )
 }
+
