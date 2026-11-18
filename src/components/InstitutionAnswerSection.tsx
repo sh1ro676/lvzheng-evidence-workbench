@@ -87,7 +87,7 @@ function citationIds(lines: string[]) {
   )
 }
 
-export function InstitutionAnswerSection({ lines, evidence, webSearch, renderParagraph }: InstitutionAnswerSectionProps) {
+export function InstitutionAnswerSection({ lines, evidence, webSearch, onCitation, renderParagraph }: InstitutionAnswerSectionProps) {
   const { intro, blocks } = parseBlocks(lines)
   const validatedBlocks = new Set<AnswerBlock>()
 
@@ -139,6 +139,24 @@ export function InstitutionAnswerSection({ lines, evidence, webSearch, renderPar
                 </div>
               </header>
 
+              {schoolEvidence.length > 0 && (
+                <div className="school-evidence-links" aria-label={`${institution}对应的原文证据`}>
+                  <span className="school-evidence-label">点此核对原文</span>
+                  {schoolEvidence.slice(0, 4).map((item) => (
+                    <button
+                      type="button"
+                      key={`${institution}-${item.citation_id}`}
+                      className="citation-chip"
+                      onClick={() => onCitation(item.citation_id)}
+                      title={`跳到右侧证据 ${item.citation_id}：${item.document_title}`}
+                    >
+                      证据 {item.citation_id}
+                    </button>
+                  ))}
+                  {schoolEvidence.length > 4 && <span className="school-evidence-more">等 {schoolEvidence.length} 条</span>}
+                </div>
+              )}
+
               {schoolBlocks.length > 0 ? (
                 <div className="opinion-body">
                   {schoolBlocks.map((block, blockIndex) => block.lines.map((line, lineIndex) => renderParagraph(line, `${institution}-${blockIndex}-${lineIndex}`)))}
@@ -149,7 +167,7 @@ export function InstitutionAnswerSection({ lines, evidence, webSearch, renderPar
                   <SearchX size={18} strokeWidth={1.6} />
                   <div>
                     {schoolEvidence.length > 0 ? (
-                      <p>已检索到 {schoolEvidence.length} 份该校资料，但原回答未形成可核验的学校小节，请在右侧原文证据中查看。</p>
+                      <p>已检索到 {schoolEvidence.length} 份该校资料，但原回答未形成可核验的学校小节，请点上方“证据 N”在右侧原文证据中查看。</p>
                     ) : result?.found === false ? (
                       <p>本次检索未获得该校教授针对本问题的可核验公开观点，不代表该校没有相关研究。</p>
                     ) : result?.found ? (

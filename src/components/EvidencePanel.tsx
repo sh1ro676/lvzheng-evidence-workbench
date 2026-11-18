@@ -24,6 +24,13 @@ const evidenceTierLabels: Record<EvidenceTier, string> = {
   secondary_unverified: '转述待核',
 }
 
+function sourceLinkLabel(item: Evidence) {
+  if (item.provider === 'pkulaw') return '打开法宝原文'
+  if (item.provider === 'deepseek_web') return '打开网页原文'
+  if (item.provider === 'textbook') return '查看教材信息'
+  return '打开官方来源'
+}
+
 export function EvidencePanel({ evidence, selectedCitationId, onSelect, onCopy, compact = false }: EvidencePanelProps) {
   return (
     <section className={`evidence-panel ${compact ? 'is-compact' : ''}`} aria-label="原文证据">
@@ -63,6 +70,14 @@ export function EvidencePanel({ evidence, selectedCitationId, onSelect, onCopy, 
                   </span>
                   <span className="match-label">{matchLabels[item.match_type]}</span>
                 </button>
+                {item.source_url && (
+                  <div className="evidence-source-row">
+                    <a className="text-action evidence-source-link" href={item.source_url} target="_blank" rel="noreferrer">
+                      <ExternalLink size={13} />{sourceLinkLabel(item)}
+                    </a>
+                    {item.institution && <span className="evidence-source-hint">{item.institution} · 检索所得原始网页</span>}
+                  </div>
+                )}
                 {(item.institution || item.relevance_basis || evidenceTierLabel) && (
                   <div className="evidence-taxonomy">
                     {evidenceTierLabel && <span className={`evidence-tier-badge is-${item.evidence_tier}`}>{evidenceTierLabel}</span>}
@@ -113,14 +128,14 @@ export function EvidencePanel({ evidence, selectedCitationId, onSelect, onCopy, 
                     </div>}
                     <div className="evidence-actions">
                       <button type="button" className="text-action" onClick={() => onCopy(item)}><Copy size={15} />复制原文</button>
-                      {item.source_url && <a className="text-action" href={item.source_url} target="_blank" rel="noreferrer">{item.provider === 'pkulaw' ? '法宝原文' : item.provider === 'deepseek_web' ? '打开网页' : '官方来源'}<ExternalLink size={14} /></a>}
                     </div>
                   </div>
                 )}
               </article>
             )
           })}
-          {[...new Set(evidence.map((item) => item.source_notice))].map((notice) => <div className="source-notice" key={notice}><Check size={14} />{notice}</div>)}
+          {[...new Set(evidence.map((item) => item.source_notice).filter((notice): notice is string => Boolean(notice)))]
+            .map((notice) => <div className="source-notice" key={notice}><Check size={14} />{notice}</div>)}
         </div>
       )}
     </section>
