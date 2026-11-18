@@ -1237,7 +1237,9 @@ def directory_search(question: str, institution: str, core: str, plans: list[str
     topics = dict.fromkeys(topic for row in scholars for topic in row["topics"]
                            if topic != "刑法" and topic in context)
     # Keep subject terms separate from the queried name and institution.
-    subject = core if case_mode else " ".join([*topics, *topic_query_terms(question, plans[0])])
+    names = {row["name"] for row in scholars}
+    subject_terms = dict.fromkeys([*topics, *topic_query_terms(question, plans[0])])
+    subject = core if case_mode else " ".join(term for term in subject_terms if term not in names)
     if not subject.strip() and article_numbers(question):
         subject = " ".join(law_title_aliases(question)[:1] + article_label_variants(question)[:1])
     if not subject.strip():
