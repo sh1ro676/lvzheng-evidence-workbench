@@ -8,9 +8,11 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
 dist-ssr
 *.local
+
+# 构建产物入库，服务器 git pull 即可部署（小站点取舍，产物约 0.4 MB）
+!dist/
 
 # Editor directories and files
 .vscode/*
