@@ -1,0 +1,21 @@
+{
+  "中国政法大学": [
+    {"name": "罗翔", "source_url": "https://law.csu.edu.cn/info/1101/6845.htm", "topics": ["刑法", "正当防卫", "防卫过当"]},
+    {"name": "阮齐林", "source_url": "https://www.ecnu.edu.cn/info/1034/71237.htm", "topics": ["刑法", "犯罪构成", "法益", "犯罪认定"]},
+    {"name": "曲新久", "source_url": "https://lifa.zju.edu.cn/2021/0601/c85520a3001705/page.htm", "topics": ["刑法", "刑法修正案", "经济犯罪", "刑事政策"]}
+  ],
+  "西北政法大学": [
+    {"name": "王政勋", "source_url": "https://xsfxy.nwupl.edu.cn/hygk/szdw/285.htm", "topics": ["刑法"]},
+    {"name": "付玉明", "source_url": "https://xsfxy.nwupl.edu.cn/hygk/szdw/83847.htm", "topics": ["刑法", "刑事政策"]},
+    {"name": "冯卫国", "source_url": "https://xsfxy.nwupl.edu.cn/hygk/szdw/83847.htm", "topics": ["刑法", "刑事执行", "反恐", "国家安全"]}
+  ],
+  "北京大学法学院": [
+    {"name": "车浩", "source_url": "https://www.law.pku.edu.cn/sz/zzjs/azyxjs/cd/10227.htm", "topics": ["刑法", "正当防卫", "防卫过当", "犯罪构成"]},
+    {"name": "江溯", "source_url": "https://www.law.pku.edu.cn/sz/zzjs/azxkjs/xfx/142807.htm", "topics": ["刑法", "共同犯罪", "刑事政策"]}
+  ],
+  "清华大学法学院": [
+    {"name": "张明楷", "source_url": "https://www.law.tsinghua.edu.cn/info/1145/9585.htm", "topics": ["刑法", "正当防卫", "防卫过当", "共同犯罪", "犯罪未遂", "因果关系"], "works": ["德国刑法中的正当防卫", "简论共同犯罪的立法完善", "再探犯罪未遂的特征", "大陆法系国家的因果关系理论"]},
+    {"name": "黎宏", "source_url": "https://www.law.tsinghua.edu.cn/info/1141/9552.htm", "topics": ["刑法", "不作为", "单位犯罪"], "works": ["不作为犯研究", "单位刑事责任论"]},
+    {"name": "周光权", "source_url": "https://www.law.tsinghua.edu.cn/info/1145/9574.htm", "topics": ["刑法", "正当防卫", "防卫过当", "犯罪构成", "刑法解释"], "works": ["行为评价机制与犯罪成立——对犯罪构成理论的扩展性思考", "刑法解释方法位阶性的质疑"]}
+  ]
+}

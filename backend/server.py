@@ -21,6 +21,7 @@ from conversation import normalize_history
 from retrieval_tasks import parallel_calls, timed_call
 
 ROOT = Path(__file__).resolve().parent
+CRIMINAL_SCHOLARS = json.loads((ROOT / "data" / "criminal_scholars.json").read_text(encoding="utf-8"))
 RETRIEVAL_TIMEOUT = 150.0
 INSTITUTION_TIMEOUT = 100.0
 FETCH_TIMEOUT = 45.0
@@ -758,7 +759,9 @@ def search_candidates(question: str, queries: list[str], info: dict, seen_urls: 
                 info["rejected_count"] += 1
                 continue
             seen_urls.add(identity)
-            candidates.append(({**item, "url": url}, query))
+            candidate = {**item, "url": url}
+            candidate.pop("_directory_lookup", None)
+            candidates.append((candidate, query))
             info["candidate_count"] += 1
             log_web_event(info, {
                 "stage": "candidate", "query": query, "url": url, "ok": True,
@@ -993,11 +996,28 @@ def remember_identities(pages: list[tuple[dict, str, dict]], institution: str,
 UNCONFIRMED_SCHOOL_AFFILIATION = "网页未明确体现目标机构教师关联，且没有可链接的官方身份正文"
 
 
+def directory_work_source(scholar: dict, title: str, institution: str) -> dict | None:
+    # A mere same-name byline on an unfamiliar page cannot establish identity.
+    normalized = re.sub(r"[^\w]", "", title.removeprefix(scholar["name"]))
+    for work in scholar.get("works", []):
+        if normalized == re.sub(r"[^\w]", "", work):
+            return {"name": scholar["name"], "institution": institution,
+                    "source_url": scholar["source_url"], "document_title": f"{scholar['name']}的高校资料页",
+                    "excerpt": f"高校资料页列有《{work}》。"}
+    return None
+
+
 def page_evidence(search_item: dict, fetched: dict, query: str, question: str | None,
                   institution: str | None = None, case_mode: bool = False,
                   case_core: str = "", entity: str = "", identities: dict | None = None,
                   topic_context: str = "") -> tuple[dict | None, str | None]:
     identity_sources = []
+    directory_lookup = search_item.get("_directory_lookup")
+    if directory_lookup:
+        scholar, topic_query = directory_lookup
+        query_for_relevance = topic_query
+    else:
+        query_for_relevance = query
     if institution:
         if re.search(r"个人简介|教师简介|师资介绍|人物简介|师资队伍", fetched["title"]):
             return None, "身份介绍页只用于任职核验，不作为观点正文"
@@ -1006,6 +1026,17 @@ def page_evidence(search_item: dict, fetched: dict, query: str, question: str | 
         authors = opinion_author_names(fetched["title"], fetched["content"])
         direct = institution_association(search_item, fetched, institution)
         direct_names = extract_case_scholar_names(fetched["title"] + "\n" + fetched["content"], institution)
+        if directory_lookup:
+            name = scholar["name"]
+            if re.search(r"^《[^》]+》\s*\d{4}\s*年\s*第\s*\d+\s*期", fetched["title"]):
+                return None, "整期杂志汇集多位作者，未定位到该学者的单篇文章"
+            if name not in authors:
+                return None, "按姓名找到的网页没有该学者的可识别署名或发言"
+            if (not case_mode and question and not article_numbers(question)
+                    and not any(term in fetched_page_text(search_item, fetched)
+                                for term in topic_query_terms(question, topic_query))):
+                return None, "按姓名找到的网页未体现所问主题"
+            direct = direct and name in direct_names
         # A different school member elsewhere in a page cannot prove the author's affiliation.
         if direct and authors and direct_names and not set(authors).intersection(direct_names):
             direct = False
@@ -1016,9 +1047,14 @@ def page_evidence(search_item: dict, fetched: dict, query: str, question: str | 
                 other_names = extract_case_scholar_names(fetched["title"] + "\n" + fetched["content"], other)
                 if set(authors).intersection(other_names):
                     return None, "观点作者明确属于其他目标院校，不能仅凭同名身份页归入本校"
-            for name in authors:
-                if identities and name in identities:
-                    identity_sources.extend(identities[name])
+            if directory_lookup:
+                identity = directory_work_source(scholar, fetched["title"], institution)
+                if identity:
+                    identity_sources.append(identity)
+            else:
+                for name in authors:
+                    if identities and name in identities:
+                        identity_sources.extend(identities[name])
             if not identity_sources:
                 return None, UNCONFIRMED_SCHOOL_AFFILIATION
     if case_mode:
@@ -1026,12 +1062,12 @@ def page_evidence(search_item: dict, fetched: dict, query: str, question: str | 
         if error:
             return None, error
     if question:
-        error = page_relevance_error(question, search_item, fetched, f"{query} {topic_context}")
+        error = page_relevance_error(question, search_item, fetched, f"{query_for_relevance} {topic_context}")
         if error:
             return None, error
     item = normalize_web_evidence(search_item, fetched, query)
     if question:
-        item["excerpt"] = extract_excerpt(item["text"], topic_query_terms(question, f"{query} {topic_context}"), article_label_variants(question))
+        item["excerpt"] = extract_excerpt(item["text"], topic_query_terms(question, f"{query_for_relevance} {topic_context}"), article_label_variants(question))
     if question and article_numbers(question):
         body = fetched_page_text(search_item, fetched)
         aliases = law_title_aliases(question)
@@ -1052,6 +1088,8 @@ def page_evidence(search_item: dict, fetched: dict, query: str, question: str | 
     if identity_sources:
         item["identity_sources"] = identity_sources
         item["source_notice"] += "按本文署名与另附高校网页的同名任职记载交叉关联，同名歧义仍需复核；身份页不证明本页观点，也不提高本页证据等级。"
+    if directory_lookup:
+        item["entity"] = scholar["name"]
     return item, None
 
 
@@ -1067,7 +1105,8 @@ def school_research_leads(pages: list[tuple[dict, str, dict]], question: str, in
         if error != UNCONFIRMED_SCHOOL_AFFILIATION:
             continue
         # The affiliation check can fail before the topic and material-type checks.
-        expanded_query = f"{query} {topic_context}"
+        topic_query = item["_directory_lookup"][1] if item.get("_directory_lookup") else query
+        expanded_query = f"{topic_query} {topic_context}"
         terms = topic_query_terms(question, expanded_query)
         labels = article_label_variants(question)
         if page_relevance_error(question, item, page, expanded_query):
@@ -1102,7 +1141,8 @@ def fetch_candidates(candidates: list[tuple[dict, str]], info: dict, institution
                      discovery_sink: list[tuple[dict, str, dict]] | None = None,
                      case_mode: bool = False, case_core: str = "",
                      entity: str = "", identities: dict | None = None,
-                     topic_context: str = "") -> list[dict]:
+                     topic_context: str = "",
+                     directory: tuple[dict, str] | None = None) -> list[dict]:
     evidence = []
     batch = candidates[:candidate_limit]
 
@@ -1131,6 +1171,12 @@ def fetch_candidates(candidates: list[tuple[dict, str]], info: dict, institution
     for search_item, query, page in successful:
         item, error = page_evidence(search_item, page, query, question, institution,
                                     case_mode, case_core, entity, identities, topic_context)
+        if (institution and directory and error == UNCONFIRMED_SCHOOL_AFFILIATION
+                and not search_item.get("_directory_lookup")
+                and directory_work_source(directory[0], page["title"], institution)):
+            item, error = page_evidence({**search_item, "_directory_lookup": directory}, page, query,
+                                        question, institution, case_mode, case_core, entity,
+                                        identities, topic_context)
         if error:
             reject_candidate(info, search_item["url"], institution, error, query)
             continue
@@ -1178,6 +1224,31 @@ def general_web_search(question: str, info: dict, seen_urls: set,
     return evidence
 
 
+def directory_search(question: str, institution: str, core: str, plans: list[str],
+                     case_mode: bool) -> tuple[dict, str] | None:
+    if os.getenv("LVTU_CRIMINAL_DIRECTORY", "1") == "0":
+        return None
+    if not CRIMINAL_SCOPE_RE.search(question) or (CIVIL_QUERY_RE.search(question) and "刑法" not in question):
+        return None
+    scholars = CRIMINAL_SCHOLARS.get(institution, [])
+    if not scholars:
+        return None
+    context = " ".join([question, *plans])
+    topics = dict.fromkeys(topic for row in scholars for topic in row["topics"]
+                           if topic != "刑法" and topic in context)
+    # Keep subject terms separate from the queried name and institution.
+    subject = core if case_mode else " ".join([*topics, *topic_query_terms(question, plans[0])])
+    if not subject.strip() and article_numbers(question):
+        subject = " ".join(law_title_aliases(question)[:1] + article_label_variants(question)[:1])
+    if not subject.strip():
+        return None
+    def topic_score(row: dict) -> int:
+        return sum(len(topic) * (2 if topic in question else 1) for topic in row["topics"] if topic in topics)
+
+    scholar = max(scholars, key=topic_score)
+    return scholar, subject.strip()[:220]
+
+
 def _search_one_institution(question: str, institution: str, base_query: str = "",
                             candidate_limit: int = 6,
                             planned_queries: list[str] | None = None) -> tuple[list[dict], dict]:
@@ -1211,6 +1282,8 @@ def _search_one_institution(question: str, institution: str, base_query: str = "
         seeds = planned_queries or [base_query or question]
         plans = [school_query(seeds[0], institution), *institution_retry_queries(question, institution, seeds)]
     topic_context = " ".join(plans)
+    directory = directory_search(question, institution, core, plans, case_mode)
+    directory_used = False
     try:
         for round_index in range(MAX_SCHOOL_SEARCHES):
             remaining = MAX_SCHOOL_FETCHES - local["fetch_attempt_count"]
@@ -1226,6 +1299,8 @@ def _search_one_institution(question: str, institution: str, base_query: str = "
                 # An author in an otherwise relevant opinion page may lack an affiliation.
                 authors = []
                 for item, previous_query, page in pages:
+                    if item.get("_directory_lookup"):
+                        continue
                     if case_mode and case_opinion_relevance_error(item, page, core):
                         continue
                     if page_relevance_error(question, item, page, f"{previous_query} {topic_context}"):
@@ -1238,6 +1313,13 @@ def _search_one_institution(question: str, institution: str, base_query: str = "
                     identity_lookups.add(entity)
                     query = f"{entity} {institution} 教师简介 site:edu.cn"
                     query_source = "identity_lookup"
+                elif directory and not directory_used:
+                    scholar, subject = directory
+                    entity = scholar["name"]
+                    query = f"{entity} {subject}"
+                    query += " 论文" if "论文" in question else " 评论 访谈" if case_mode else ""
+                    query_source = "directory_author"
+                    directory_used = True
                 elif case_mode:
                     pending = [entry["name"] for entry in entities if entry["name"] not in searched_entities]
                     if pending:
@@ -1257,8 +1339,11 @@ def _search_one_institution(question: str, institution: str, base_query: str = "
             local["_query_source"] = query_source
             if entity:
                 local["_active_entity"] = entity
-                log_web_event(local, {"stage": "entity", "ok": True, "entity": entity,
-                                     "reason": "姓名来自已读取的正文或真实搜索线索，仅用于后续核验"}, institution)
+                event = {"stage": "entity", "ok": True, "entity": entity,
+                         "reason": "姓名来自已读取的正文或真实搜索线索，仅用于后续核验"}
+                if query_source == "directory_author":
+                    event.update(url=directory[0]["source_url"], reason="高校名录用于按姓名查找署名观点")
+                log_web_event(local, event, institution)
                 if query_source == "first_round_entity":
                     sources = next((entry["sources"] for entry in entities if entry["name"] == entity), [])
                     log_web_event(local, {"stage": "second_round", "ok": True, "entity": entity,
@@ -1269,16 +1354,27 @@ def _search_one_institution(question: str, institution: str, base_query: str = "
                 log_web_event(local, {"stage": "retry", "ok": True, "query": query,
                                      "reason": "未取得有效正文，按剩余搜索与抓取预算扩检"}, institution)
             candidates = search_candidates(question, [query], local, seen_urls, institution)
+            if query_source == "directory_author":
+                candidates = [({**item, "_directory_lookup": directory}, text) for item, text in candidates]
             backlog.extend(candidates)
-            available = [pair for pair in backlog if pair[0]["url"] not in attempted]
-            available.sort(key=lambda pair: candidate_rank(pair[0], question), reverse=True)
-            limit = min(candidate_limit, remaining)
+            source_batch = candidates if query_source == "directory_author" else backlog
+            available = [pair for pair in source_batch if pair[0]["url"] not in attempted]
+            if query_source == "directory_author":
+                # Search metadata ranks leads only. Attribution uses fetched content.
+                available.sort(key=lambda pair: (
+                    entity in str(pair[0].get("title", "")),
+                    entity in (str(pair[0].get("snippet", "")) + str(pair[0].get("summary", ""))),
+                    candidate_rank(pair[0], question),
+                ), reverse=True)
+            else:
+                available.sort(key=lambda pair: candidate_rank(pair[0], question), reverse=True)
+            limit = min(candidate_limit, remaining, 3 if query_source == "directory_author" else remaining)
             batch = available[:limit]
             attempted.update(item["url"] for item, _query in batch)
             evidence = fetch_candidates(
                 batch, local, institution, evidence_limit=1, candidate_limit=limit,
                 question=question, discovery_sink=pages, case_mode=case_mode,
-                case_core=core, identities=identities, topic_context=topic_context,
+                case_core=core, identities=identities, topic_context=topic_context, directory=directory,
             )
             # A newly fetched identity page can validate an earlier opinion without fetching it again.
             if not evidence and identities:
@@ -1300,8 +1396,19 @@ def _search_one_institution(question: str, institution: str, base_query: str = "
             item["entities"] = [name for name in local["entities"] if name in item["text"]]
             if item.get("identity_sources"):
                 item["entities"] = list(dict.fromkeys(item["entities"] + [source["name"] for source in item["identity_sources"]]))
-            if local.get("_active_entity"):
-                item["entity"] = local["_active_entity"]
+            if local.get("_active_entity") and local["_query_source"] != "directory_author":
+                item.setdefault("entity", local["_active_entity"])
+        author_names = set()
+        verified_authors = set()
+        for _item, _query, page in pages:
+            named = set(opinion_author_names(page["title"], page["content"]))
+            author_names.update(named)
+            direct = extract_case_scholar_names(page["title"] + "\n" + page["content"], institution)
+            verified_authors.update(named.intersection(direct))
+        for item in evidence:
+            verified_authors.update(source["name"] for source in item.get("identity_sources", []))
+        local["authors_found"] = sorted(author_names)
+        local["authors_verified"] = sorted(verified_authors)
         local["identity_source_count"] = sum(len(sources) for sources in identities.values())
         local["stop_reason"] = ("已取得有效观点正文" if evidence else
                                 "正文抓取预算已用尽" if local["fetch_attempt_count"] >= MAX_SCHOOL_FETCHES else
@@ -1340,6 +1447,8 @@ def _merge_institution_info(info: dict, institution: str, evidence: list[dict], 
         "second_round": local.get("second_round", False),
         "second_round_entity": local.get("second_round_entity", ""),
         "identity_source_count": local.get("identity_source_count", 0),
+        "authors_found": local.get("authors_found", []),
+        "authors_verified": local.get("authors_verified", []),
         "stop_reason": local.get("stop_reason", ""),
         **({} if evidence else {"reason": local.get("failure") or empty_reason}),
     })

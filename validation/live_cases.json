@@ -5,6 +5,8 @@
     {"id": "followup", "question": "它和第1166条的归责原则有什么不同？", "history_from": "statute", "web_search": false, "requires": ["model", "pkulaw"], "minimum_main_evidence": 2},
     {"id": "topic", "question": "请找四校教授对《民法典》第22条成年监护与行为能力宣告的观点，列明出处。", "web_search": true, "requires": ["model", "web"]},
     {"id": "topic-paper", "question": "请找四校教授对《民法典》第22条成年监护与行为能力宣告的相关论文，列明出处。", "web_search": true, "requires": ["model", "web"]},
-    {"id": "case", "question": "请梳理吴谢宇案的公开事实与法律争议，并检索四校学者的公开评析，区分裁判认定和媒体说法。", "web_search": true, "requires": ["model", "web"]}
+    {"id": "case", "question": "请梳理吴谢宇案的公开事实与法律争议，并检索四校学者的公开评析，区分裁判认定和媒体说法。", "web_search": true, "requires": ["model", "web"]},
+    {"id": "criminal-defense", "question": "请查四校学者对刑法第20条正当防卫和防卫限度的公开观点，注明作者与原始出处。", "web_search": true, "requires": ["model", "web"]},
+    {"id": "criminal-accomplice", "question": "请查四校学者对刑法第25条共同犯罪的公开学术讨论，注明作者与原始出处。", "web_search": true, "requires": ["model", "web"]}
   ]
 }

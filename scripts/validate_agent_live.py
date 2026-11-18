@@ -190,6 +190,8 @@ def run_case(port: int, case: dict, prior: dict, audit: UpstreamAudit) -> dict:
             'main_evidence': len(main.get('evidence', [])),
             'school_evidence': len((schools or {}).get('evidence', [])),
             'schools_hit': [item['institution'] for item in school_results if item.get('found')],
+            'schools_with_authors': [item['institution'] for item in school_results if item.get('authors_found')],
+            'schools_with_verified_authors': [item['institution'] for item in school_results if item.get('authors_verified')],
             'web_search_requests': sum(info.get('search_count', 0) for info in infos),
             'web_fetch_attempts': sum(info.get('fetch_attempt_count', 0) for info in infos),
             'upstream_http_requests': sum(event['case_id'] == case['id'] for event in audit.events),
@@ -211,6 +213,7 @@ def main(argv=None) -> int:
     parser.add_argument('--project-root', type=Path, default=ROOT, help='可指向旧版工作树；验收脚本无需复制进旧仓库')
     parser.add_argument('--env-file', type=Path, help='可复用本机 .env，不复制或上传密钥')
     parser.add_argument('--max-upstream-requests', type=int, default=100)
+    parser.add_argument('--criminal-directory', choices=('on', 'off'), help='固定刑法学者名录策略，便于同版本对照')
     args = parser.parse_args(argv)
     if not 1 <= args.max_upstream_requests <= 500:
         parser.error('上游 HTTP 请求预算必须在 1–500 之间')
@@ -223,6 +226,9 @@ def main(argv=None) -> int:
             key, value = raw.split('=', 1)
             if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key.strip()):
                 os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    if args.criminal_directory:
+        os.environ['LVTU_CRIMINAL_DIRECTORY'] = '1' if args.criminal_directory == 'on' else '0'
+        os.environ['WEB_CACHE_TTL'] = '0'
     project_root = args.project_root.resolve()
     sys.path.insert(0, str(project_root / 'backend'))
     import server as app  # Loads .env inside this process, never into the report.
@@ -234,6 +240,7 @@ def main(argv=None) -> int:
               'created_at': datetime.now(timezone.utc).isoformat(), 'configured': configured,
               'model': app.DEEPSEEK.model, 'cases_manifest': manifest,
               'planned_case_ids': [case['id'] for case in cases],
+              'criminal_directory_enabled': os.environ.get('LVTU_CRIMINAL_DIRECTORY', '1') != '0',
               'max_upstream_requests_per_case': args.max_upstream_requests,
               'case_set_hash': hashlib.sha256(json.dumps(cases, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
               'status': 'not_run', 'cases': [], 'upstream_requests': [], 'missing': missing}

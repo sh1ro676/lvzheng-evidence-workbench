@@ -43,7 +43,7 @@ export interface Evidence {
     source_url: string
     document_title: string
     excerpt: string
-    content_hash: string
+    content_hash?: string
   }[]
   institution?: string
   entity?: string
@@ -112,6 +112,8 @@ export interface WebSearchInfo {
     second_round?: boolean
     second_round_entity?: string
     identity_source_count?: number
+    authors_found?: string[]
+    authors_verified?: string[]
     stop_reason?: string
     reason?: string
   }[]

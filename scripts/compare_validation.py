@@ -30,9 +30,13 @@ def compare(before: dict, after: dict) -> dict:
                      'execution_after': second['execution_passed'],
                      'before': a, 'after': b,
                      'delta': {key: round(b[key] - a[key], 3) for key in numeric},
-                     'schools_hit_delta': len(b['schools_hit']) - len(a['schools_hit'])})
+                     **{f'{key}_delta': len(b[key]) - len(a[key])
+                        for key in ('schools_hit', 'schools_with_authors', 'schools_with_verified_authors')
+                        if key in a and key in b}})
     return {'before_revision': before['revision'], 'after_revision': after['revision'],
             'case_set_hash': before['case_set_hash'], 'rows': rows,
+            'criminal_directory_before': before.get('criminal_directory_enabled'),
+            'criminal_directory_after': after.get('criminal_directory_enabled'),
             'legal_quality': 'pending_manual_review',
             'notes': ['新增证据或学校命中不等于正确命中，须核对原始出处。',
                       '联网资料及模型输出会波动，单次对比不证明稳定提升。',

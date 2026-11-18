@@ -66,6 +66,20 @@ python scripts/compare_validation.py .validation/live/old-topic.json .validation
 
 比较器要求问题集合、问题正文／历史依赖、模型、服务配置及请求预算一致，且两边都完成了计划内问题。配置预检和浏览器模拟报告不能作为真实检索结果参加比较。输出只比较原始证据数量、学校覆盖、请求数及耗时；新增资料仍须核对是否真正相关。
 
+## 刑法学者名录对照
+
+刑法学者名录试点覆盖四校。每校最多三次搜索、十次正文抓取，首轮仍搜主题，最多一轮改用名录姓名反查观点。身份待核的网页继续作为线索展示。名录记录高校出处与选词标签，只有高校资料中明确列出的文献才用于篇名交叉核验。
+
+可在同一版本、同一配置下关闭和开启名录策略，配对比较。以下命令会使用实际 API 额度：
+
+```bash
+python scripts/validate_agent_live.py --case criminal-defense --criminal-directory off --output .validation/live/defense-off.json
+python scripts/validate_agent_live.py --case criminal-defense --criminal-directory on --output .validation/live/defense-on.json
+python scripts/compare_validation.py .validation/live/defense-off.json .validation/live/defense-on.json
+```
+
+`criminal-accomplice` 可用同样方式复测。显式指定名录策略时，两组均关闭网页正文缓存。报告分别给出取得正文署名、取得署名与院校关联、取得可展示观点的学校数。检查原网页能否支持作者和观点归属，再判定增加的命中是否有效。
+
 ## 独立质量审核
 
 审核者应逐题打开原始出处，核对：
