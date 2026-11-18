@@ -68,6 +68,7 @@ try {
       return route.fulfill({ json: { evidence: [{
         ...evidence(book.title), article_label: '书内 p397（PDF p418）',
         provider: 'textbook', match_type: 'textbook', source_name: book.source_name, source_url: '',
+        published_at: '2021',
       }] } })
     }
     if (path === '/api/providers') return route.fulfill({ json: { providers: [] } })
@@ -171,6 +172,8 @@ try {
   await page.getByRole('textbox', { name: '检索教材' }).fill('书内 397')
   await page.getByRole('button', { name: '检索教材', exact: true }).click()
   await page.locator('.textbook-location').getByText('书内 p397（PDF p418）', { exact: true }).waitFor()
+  await page.locator('.source-metadata').getByText('出版年份', { exact: true }).waitFor()
+  assert.equal(await page.locator('.source-metadata').getByText('施行日期', { exact: true }).count(), 0)
   assert.deepEqual(libraryRequests.at(-1), { bookId: books[1].book_id, query: '书内 397' })
   assert.equal(await page.getByRole('button', { name: '民法典', exact: true }).count(), 0)
   await page.screenshot({ path: `${outputDir}/expert-library.png`, fullPage: true })
