@@ -5,6 +5,12 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     ...options,
     headers: { 'Content-Type': 'application/json', ...options?.headers },
   })
+  // 登录态失效时回到登录页，避免用户面对一屏报错。
+  if (response.status === 401) {
+    const next = encodeURIComponent(location.pathname + location.search)
+    location.replace(`/login.html?next=${next}`)
+    throw new Error('需要登录')
+  }
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.error || `请求失败（${response.status}）`)
   return data as T
@@ -70,6 +76,11 @@ export async function askLawStream(
     signal,
   })
   if (!response.ok || !response.body) {
+    if (response.status === 401) {
+      const next = encodeURIComponent(location.pathname + location.search)
+      location.replace(`/login.html?next=${next}`)
+      throw new Error('需要登录')
+    }
     const detail = await response.json().catch(() => ({}))
     throw new Error((detail as { error?: string }).error || `请求失败（${response.status}）`)
   }

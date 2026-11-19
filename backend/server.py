@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -1628,6 +1629,32 @@ def school_payload(question: str, history: list[dict] | None = None) -> dict:
     }
 
 
+ACCESS_PASSWORD = os.environ.get("ACCESS_PASSWORD", "").strip()
+ACCESS_COOKIE = "lvtu_access"
+ACCESS_MAX_AGE = 30 * 24 * 3600
+
+
+def access_token() -> str:
+    """cookie 里存派生值，不把明文密码交给浏览器。"""
+    secret = os.environ.get("ACCESS_SECRET", "").strip() or ACCESS_PASSWORD
+    return hmac.new(secret.encode("utf-8"), b"lvtu-access-v1", hashlib.sha256).hexdigest()
+
+
+def cookie_from_header(header: str | None) -> str:
+    for part in (header or "").split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == ACCESS_COOKIE:
+            return value.strip()
+    return ""
+
+
+def request_authorised(handler: "Handler") -> bool:
+    if not ACCESS_PASSWORD:
+        return True  # 未设置访问密码时不启用登录
+    token = cookie_from_header(handler.headers.get("Cookie"))
+    return bool(token) and hmac.compare_digest(token, access_token())
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "LvzhengEvidence/0.1"
 
@@ -1659,6 +1686,12 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         params = urllib.parse.parse_qs(parsed.query)
+        if path == "/api/auth/check":
+            if request_authorised(self):
+                self.send_json({"ok": True})
+            else:
+                self.send_json({"ok": False, "error": "需要登录"}, 401)
+            return
         if path == "/api/health":
             self.send_json({
                 "ok": True,
@@ -1886,8 +1919,42 @@ class Handler(BaseHTTPRequestHandler):
                    "answer": answer, "evidence": numbered, "verification": verification,
                    "retrieval": _timed_retrieval(), "followup": followup})
 
+    def handle_login(self) -> None:
+        """单一访问密码换 cookie；未设置 ACCESS_PASSWORD 时直接放行。"""
+        if not ACCESS_PASSWORD:
+            self.send_json({"ok": True, "message": "未启用访问密码"})
+            return
+        try:
+            data = self.read_json()
+        except (ValueError, json.JSONDecodeError) as error:
+            self.send_json({"error": f"请求格式错误：{error}"}, 400)
+            return
+        password = str(data.get("password") or "")
+        if not hmac.compare_digest(password, ACCESS_PASSWORD):
+            time.sleep(0.6)  # 放慢暴力尝试
+            self.send_json({"error": "密码不正确"}, 401)
+            return
+        body = json.dumps({"ok": True}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Set-Cookie",
+                         f"{ACCESS_COOKIE}={access_token()}; Path=/; Max-Age={ACCESS_MAX_AGE}; "
+                         "HttpOnly; SameSite=Lax")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self) -> None:
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/login":
+            self.handle_login()
+            return
+        if path == "/api/logout":
+            self.send_response(204)
+            self.send_header("Set-Cookie", f"{ACCESS_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+            self.end_headers()
+            return
         if path == "/api/chat/stream":
             self.handle_stream()
             return
