@@ -56,7 +56,14 @@ export interface UploadedFile {
 export async function uploadFile(file: File): Promise<UploadedFile> {
   const form = new FormData()
   form.append('file', file, file.name)
-  const response = await fetch('/api/files', { method: 'POST', body: form })
+  let response: Response
+  try {
+    response = await fetch('/api/files', { method: 'POST', body: form })
+  } catch {
+    // 连接被掐断时浏览器只会抛 TypeError: Failed to fetch，这里换成能看懂的原因
+    throw new Error('上传中断：文件可能超过 25 MB，或网络连接不稳定，请重试')
+  }
+  if (response.status === 413) throw new Error('文件太大，单个文件请控制在 25 MB 以内')
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error((data as { error?: string }).error || `上传失败（${response.status}）`)
   return data as UploadedFile
