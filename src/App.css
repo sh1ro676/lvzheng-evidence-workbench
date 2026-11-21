@@ -421,3 +421,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .evidence-source-row { margin-left: 0; }
   .school-evidence-links { padding-left: 14px; padding-right: 14px; }
 }
+
+/* 上传文件：附件按钮与已选文件条 */
+.upload-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer; }
+.upload-toggle:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.upload-toggle:disabled { opacity: .6; cursor: progress; }
+.uploaded-files { display: flex; flex-wrap: wrap; gap: 7px; padding: 10px 12px 0; }
+.uploaded-file { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 5px 9px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--muted); font-size: 11.5px; }
+.uploaded-file strong { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 600; }
+.uploaded-file span { white-space: nowrap; }
+.uploaded-file button { display: inline-grid; place-items: center; width: 18px; height: 18px; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+.uploaded-file button:hover { background: var(--line); color: var(--ink); }
+
+@media (max-width: 720px) {
+  .uploaded-file strong { max-width: 120px; }
+  .upload-toggle { padding: 6px 9px; font-size: 11.5px; }
+}

@@ -33,11 +33,41 @@ export function searchTextbook(query: string, bookId: string) {
   return request<{ evidence: Evidence[] }>(`/api/expert-library/search?${params}`)
 }
 
-export function askLaw(question: string, webSearch = true, documentId?: string, history: ChatTurn[] = []) {
+export function askLaw(question: string, webSearch = true, documentId?: string, history: ChatTurn[] = [], fileIds: string[] = []) {
   return request<ChatResponse>('/api/chat', {
     method: 'POST',
-    body: JSON.stringify({ question, document_id: documentId, web_search: webSearch, history }),
+    body: JSON.stringify({ question, document_id: documentId, web_search: webSearch, history, file_ids: fileIds }),
   })
+}
+
+export interface UploadedFile {
+  file_id: string
+  name: string
+  kind: 'docx' | 'pdf'
+  engine: 'docx' | 'pypdf' | 'ocr'
+  ocr_used: boolean
+  pages: number
+  chars: number
+  chunk_count: number
+  created_at: number
+}
+
+/** 上传 Word/PDF，后端解析后返回元信息；文件本身不再回传。 */
+export async function uploadFile(file: File): Promise<UploadedFile> {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  const response = await fetch('/api/files', { method: 'POST', body: form })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error((data as { error?: string }).error || `上传失败（${response.status}）`)
+  return data as UploadedFile
+}
+
+export function listFiles() {
+  return request<{ files: UploadedFile[] }>('/api/files')
+}
+
+export function deleteFile(fileId: string) {
+  return request<{ ok: boolean }>(`/api/files/${fileId}`, { method: 'DELETE' })
 }
 
 /** 第二段：后台补四校观点。第一段（法条＋教材）已经先渲染，这里只追加。 */
@@ -68,11 +98,12 @@ export async function askLawStream(
   onStage?: (stage: AgentStage) => void,
   history: ChatTurn[] = [],
   signal?: AbortSignal,
+  fileIds: string[] = [],
 ): Promise<ChatResponse> {
   const response = await fetch('/api/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, web_search: webSearch, history }),
+    body: JSON.stringify({ question, web_search: webSearch, history, file_ids: fileIds }),
     signal,
   })
   if (!response.ok || !response.body) {

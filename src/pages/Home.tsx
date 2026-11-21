@@ -1,14 +1,15 @@
-﻿import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   AlertCircle, ArrowUp, BookOpen, CheckCircle2, ChevronRight, CircleHelp,
-  FileSearch, Globe, Library, LoaderCircle, Plus, Scale, ShieldCheck, Sparkles,
+  FileSearch, FileText, Globe, Library, LoaderCircle, Paperclip, Plus, Scale, ShieldCheck, Sparkles, X,
 } from 'lucide-react'
 import { AnswerText } from '@/components/AnswerText'
 import { EvidencePanel } from '@/components/EvidencePanel'
 import { LibraryView } from '@/components/LibraryView'
 import { ModelDialog } from '@/components/ModelDialog'
 import { ResearchLeads } from '@/components/ResearchLeads'
-import { askLawStream, askSchools, getHealth, getProviders, getTextbooks } from '@/lib/api'
+import { askLawStream, askSchools, deleteFile, getHealth, getProviders, getTextbooks, listFiles, uploadFile } from '@/lib/api'
+import type { UploadedFile } from '@/lib/api'
 import { newId } from '@/lib/id'
 import { conversationHistory, mergeSchoolResponse } from '@/lib/conversation'
 import type { AgentStage } from '@/lib/api'
@@ -51,6 +52,9 @@ export default function Home() {
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState<AgentStage>('planning')
   const [webSearch, setWebSearch] = useState(true)
+  const [files, setFiles] = useState<UploadedFile[]>([])
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [activeEvidence, setActiveEvidence] = useState<Evidence[]>([])
   const [selected, setSelected] = useState<Evidence>()
   const [modelDialogOpen, setModelDialogOpen] = useState(false)
@@ -76,6 +80,7 @@ export default function Home() {
       .catch(() => setToast('后端尚未连接，请确认开发服务已完整启动。'))
     getTextbooks().then((data) => setBooks(data.books))
       .catch(() => setBooksError('暂时无法读取教材目录，请确认后端服务已启动后刷新页面。'))
+      listFiles().then((value) => setFiles(value.files)).catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -87,6 +92,32 @@ export default function Home() {
     const timer = window.setTimeout(() => setToast(''), 2600)
     return () => window.clearTimeout(timer)
   }, [toast])
+
+  async function handleFiles(selectedFiles: FileList | null) {
+    if (!selectedFiles?.length) return
+    setUploading(true)
+    try {
+      for (const file of Array.from(selectedFiles).slice(0, 3)) {
+        const record = await uploadFile(file)
+        setFiles((current) => [record, ...current.filter((item) => item.file_id !== record.file_id)].slice(0, 5))
+      }
+      setToast('文件已解析，可以在提问时作为证据使用')
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : '上传失败')
+    } finally {
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  async function removeFile(fileId: string) {
+    try {
+      await deleteFile(fileId)
+      setFiles((current) => current.filter((item) => item.file_id !== fileId))
+    } catch {
+      setToast('删除失败，请稍后重试')
+    }
+  }
 
   async function submitQuestion(value: string) {
     const question = value.trim()
@@ -121,7 +152,7 @@ export default function Home() {
           : message))
       }, webSearch, (next) => {
         if (taskVersion === taskVersionRef.current) setStage(next)
-      }, history, controller.signal)
+      }, history, controller.signal, files.map((item) => item.file_id))
       if (taskVersion !== taskVersionRef.current) return
       setMessages((current) => current.map((message) => message.id === assistantId
         ? {
@@ -346,6 +377,20 @@ export default function Home() {
                 )}
               </div>
               <form className="question-composer" onSubmit={(event) => { event.preventDefault(); void submitQuestion(input) }}>
+                {files.length > 0 && (
+                  <div className="uploaded-files" aria-label="本次使用的上传文件">
+                    {files.map((item) => (
+                      <span className="uploaded-file" key={item.file_id}>
+                        <FileText size={13} />
+                        <strong>{item.name}</strong>
+                        <span>{item.pages} 页 · {item.chars} 字{item.ocr_used ? ' · OCR' : ''}</span>
+                        <button type="button" onClick={() => void removeFile(item.file_id)} aria-label={`移除 ${item.name}`}>
+                          <X size={13} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
@@ -361,6 +406,17 @@ export default function Home() {
                 />
                 <div className="composer-bottom">
                   <div className="composer-tools">
+                    <button type="button" className="upload-toggle" onClick={() => fileInputRef.current?.click()} disabled={uploading} title="上传 Word 或 PDF，作为本次回答的证据">
+                      <Paperclip size={15} />{uploading ? '解析中…' : '上传文件'}
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".docx,.pdf"
+                      multiple
+                      hidden
+                      onChange={(event) => void handleFiles(event.target.files)}
+                    />
                     <button type="button" className={`web-toggle ${webSearch ? 'active' : ''}`} onClick={() => setWebSearch((enabled) => !enabled)} aria-pressed={webSearch} title="案件问题检索公开事实，法条问题可后台补充四校观点"><Globe size={15} />联网增强<span>{webSearch ? '案件与四校' : '已关闭'}</span></button>
                     <span className="keyboard-hint"><kbd>Ctrl</kbd>＋<kbd>Enter</kbd> 发送<span className="character-count">{input.length}/2000</span></span>
                   </div>

@@ -18,6 +18,7 @@ from legal_store import (ARTICLE_KEY_RE, ARTICLE_QUERY_RE, LegalStore,
                          chinese_number_to_int, normalize_article_refs)
 from pkulaw_mcp import PkulawError, PkulawProvider, extract_law_title
 from web_search_client import DeepSeekWebClient, WebSearchError, normalize_web_evidence, utc_now
+import file_ingest
 from conversation import normalize_history
 from retrieval_tasks import parallel_calls, timed_call
 
@@ -1686,6 +1687,17 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         params = urllib.parse.parse_qs(parsed.query)
+        if path == "/api/files":
+            self.send_json({"files": file_ingest.list_records()})
+            return
+        match = re.fullmatch(r"/api/files/([0-9a-f]{16})", path)
+        if match:
+            record = file_ingest.load_record(match.group(1))
+            if record:
+                self.send_json({key: value for key, value in record.items() if key != "chunks"})
+            else:
+                self.send_json({"error": "文件不存在"}, 404)
+            return
         if path == "/api/auth/check":
             if request_authorised(self):
                 self.send_json({"ok": True})
@@ -1842,6 +1854,14 @@ class Handler(BaseHTTPRequestHandler):
             web_evidence, web_info = [], {}
         timings["retrieval"] = _elapsed_ms()
 
+        # 用户上传的文件排在证据最前面：它们是本轮的原始材料，优先级高于公开检索。
+        file_evidence = file_ingest.evidence_from_files(
+            [str(value) for value in (data.get("file_ids") or [])], search_question)
+        if file_evidence:
+            evidence = dedupe_evidence(file_evidence + evidence)
+            retrieval["files"] = {"count": len(file_evidence),
+                                  "names": list(dict.fromkeys(item["document_title"] for item in file_evidence))}
+
         if need_main_web:
             if is_case:
                 _stage("supplementing")
@@ -1919,6 +1939,46 @@ class Handler(BaseHTTPRequestHandler):
                    "answer": answer, "evidence": numbered, "verification": verification,
                    "retrieval": _timed_retrieval(), "followup": followup})
 
+    def read_multipart_file(self) -> tuple[bytes, str]:
+        """解析 multipart/form-data，取 file 字段；只支持单文件。"""
+        content_type = self.headers.get("Content-Type", "")
+        match = re.search(r"boundary=([^;]+)", content_type)
+        if not match:
+            raise ValueError("缺少 multipart 边界")
+        boundary = match.group(1).strip().strip('"').encode()
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            raise ValueError("请求体为空")
+        if length > file_ingest.MAX_BYTES + 64 * 1024:
+            raise file_ingest.FileError("文件超过 25 MB，请拆分后再上传")
+        raw = self.rfile.read(length)
+        marker = b"--" + boundary
+        for part in raw.split(marker):
+            if b"filename=" not in part:
+                continue
+            head, separator, body = part.partition(b"\r\n\r\n")
+            if not separator:
+                continue
+            name_match = re.search(rb'filename="([^"]*)"', head)
+            filename = name_match.group(1).decode("utf-8", "replace") if name_match else "未命名"
+            body = body.rstrip(b"\r\n")
+            if body.endswith(b"--"):
+                body = body[:-2]
+            return body, filename
+        raise ValueError("没有找到上传的文件字段")
+
+    def handle_upload(self) -> None:
+        try:
+            payload, filename = self.read_multipart_file()
+            self.send_json(file_ingest.ingest(payload, filename))
+        except file_ingest.FileError as error:
+            self.send_json({"error": str(error)}, 400)
+        except (ValueError, OSError) as error:
+            self.send_json({"error": f"上传失败：{error}"}, 400)
+        except Exception as error:  # noqa: BLE001
+            self.log_error("upload error: %r", error)
+            self.send_json({"error": "文件解析失败"}, 500)
+
     def handle_login(self) -> None:
         """单一访问密码换 cookie；未设置 ACCESS_PASSWORD 时直接放行。"""
         if not ACCESS_PASSWORD:
@@ -1945,8 +2005,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_DELETE(self) -> None:
+        path = urllib.parse.urlparse(self.path).path
+        match = re.fullmatch(r"/api/files/([0-9a-f]{16})", path)
+        if not match:
+            self.send_json({"error": "接口不存在"}, 404)
+            return
+        if file_ingest.delete_record(match.group(1)):
+            self.send_json({"ok": True})
+        else:
+            self.send_json({"error": "文件不存在"}, 404)
+
     def do_POST(self) -> None:
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/files":
+            self.handle_upload()
+            return
         if path == "/api/login":
             self.handle_login()
             return
