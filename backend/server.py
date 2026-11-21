@@ -2088,6 +2088,17 @@ class Handler(BaseHTTPRequestHandler):
             retrieval["web_search"] = web_info
             notices = [value for value in [retrieval.get("notice"), web_info.get("notice")] if value]
             retrieval["notice"] = "；".join(dict.fromkeys(notices))
+
+            # 上传文件优先于公开检索：它们是本轮的原始材料。
+            file_evidence = file_ingest.evidence_from_files(
+                [str(value) for value in (data.get("file_ids") or [])], search_question)
+            if file_evidence:
+                evidence = dedupe_evidence(file_evidence + evidence)
+                retrieval["files"] = {
+                    "count": len(file_evidence),
+                    "names": list(dict.fromkeys(item["document_title"] for item in file_evidence)),
+                }
+
             payload = response_payload(question, evidence, **context)
             payload["retrieval"] = retrieval
             self.send_json(payload)
