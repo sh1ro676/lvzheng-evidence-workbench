@@ -280,7 +280,12 @@ def evidence_from_files(file_ids: list[str], question: str, per_file: int = 3) -
         else:
             index = BookIndex(chunks)
             hits = index.search(question, k=per_file) or [(0.0, chunk) for chunk in chunks[:per_file]]
-            picked = [(f"第 {chunk.printed} 页", chunk.text) for _, chunk in hits]
+            if record.get("kind") == "pdf":
+                picked = [(f"第 {chunk.printed} 页", chunk.text) for _, chunk in hits]
+            else:
+                # Word 没有可靠页码，用片段序号，避免让用户以为能翻到第 N 页
+                picked = [(f"片段 {position}", chunk.text)
+                          for position, (_, chunk) in enumerate(hits, start=1)]
         for label, text in picked:
             items.append({
                 "document_id": f"upload-{file_id}",

@@ -54,7 +54,8 @@ class IngestTest(unittest.TestCase):
         items = file_ingest.evidence_from_files([record["file_id"]], "押金 违约金")
         self.assertTrue(items)
         self.assertLessEqual(len(items), 3)
-        self.assertTrue(all(item["article_label"].startswith("第") for item in items))
+        # Word 没有可靠页码，标签应为“片段 N”而不是误导性的页码
+        self.assertTrue(all(item["article_label"].startswith("片段") for item in items))
 
     def test_upload_route_registered(self) -> None:
         handler_source = Path(server.__file__).read_text(encoding="utf-8")
