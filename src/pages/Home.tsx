@@ -54,6 +54,7 @@ export default function Home() {
   const [webSearch, setWebSearch] = useState(true)
   const [files, setFiles] = useState<UploadedFile[]>([])
   const [uploading, setUploading] = useState(false)
+  const [dragging, setDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [activeEvidence, setActiveEvidence] = useState<Evidence[]>([])
   const [selected, setSelected] = useState<Evidence>()
@@ -108,6 +109,34 @@ export default function Home() {
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
+  }
+
+  function dragHasFiles(event: React.DragEvent<HTMLFormElement>) {
+    return Array.from(event.dataTransfer?.types || []).includes('Files')
+  }
+
+  function onDragEnter(event: React.DragEvent<HTMLFormElement>) {
+    if (!dragHasFiles(event)) return
+    event.preventDefault()
+    setDragging(true)
+  }
+
+  function onDragOver(event: React.DragEvent<HTMLFormElement>) {
+    if (!dragHasFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  function onDragLeave(event: React.DragEvent<HTMLFormElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+    setDragging(false)
+  }
+
+  function onDrop(event: React.DragEvent<HTMLFormElement>) {
+    if (!dragHasFiles(event)) return
+    event.preventDefault()
+    setDragging(false)
+    void handleFiles(event.dataTransfer.files)
   }
 
   async function removeFile(fileId: string) {
@@ -376,7 +405,21 @@ export default function Home() {
                   </div>
                 )}
               </div>
-              <form className="question-composer" onSubmit={(event) => { event.preventDefault(); void submitQuestion(input) }}>
+              <form
+                className={`question-composer ${dragging ? 'is-drop-target' : ''}`}
+                onSubmit={(event) => { event.preventDefault(); void submitQuestion(input) }}
+                onDragEnter={onDragEnter}
+                onDragOver={onDragOver}
+                onDragLeave={onDragLeave}
+                onDrop={onDrop}
+              >
+                {dragging && (
+                  <div className="drop-hint" aria-hidden="true">
+                    <Paperclip size={20} />
+                    <strong>松手即可上传</strong>
+                    <span>支持 Word（.docx）和 PDF，单个不超过 25 MB</span>
+                  </div>
+                )}
                 {files.length > 0 && (
                   <div className="uploaded-files" aria-label="本次使用的上传文件">
                     {files.map((item) => (
@@ -406,8 +449,8 @@ export default function Home() {
                 />
                 <div className="composer-bottom">
                   <div className="composer-tools">
-                    <button type="button" className="upload-toggle" onClick={() => fileInputRef.current?.click()} disabled={uploading} title="上传 Word 或 PDF，作为本次回答的证据">
-                      <Paperclip size={15} />{uploading ? '解析中…' : '上传文件'}
+                    <button type="button" className="upload-toggle" onClick={() => fileInputRef.current?.click()} disabled={uploading} title="上传 Word 或 PDF，也可以直接把文件拖进输入框">
+                      <Paperclip size={15} /><span>{uploading ? '解析中' : '上传文件'}</span>
                     </button>
                     <input
                       ref={fileInputRef}
