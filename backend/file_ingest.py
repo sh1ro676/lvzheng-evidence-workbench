@@ -188,19 +188,38 @@ def ingest(data: bytes, filename: str) -> dict:
         raise FileError(f"文件超过 {MAX_BYTES // 1024 // 1024} MB")
     kind = detect_kind(data, filename)
     engine = "docx" if kind == "docx" else "pypdf"
-    pages = parse_docx(data) if kind == "docx" else parse_pdf(data)
+    ocr_used = False
+    parse_error: FileError | None = None
+
+    try:
+        pages = parse_docx(data) if kind == "docx" else parse_pdf(data)
+    except FileError as error:
+        # 本地解析失败（加密、损坏、纯图片 Word）不直接拒绝：开启 OCR 时交给云端兜底
+        pages = []
+        parse_error = error
 
     total_chars = sum(len(text) for _, text in pages)
-    coverage = total_chars / max(len(pages), 1)
-    ocr_used = False
-    if kind == "pdf" and coverage < MIN_CHARS_PER_PAGE and ocr_enabled():
-        pages = ocr_document(data, filename)
-        engine = "ocr"
-        ocr_used = True
-        total_chars = sum(len(text) for _, text in pages)
+    coverage = total_chars / max(len(pages), 1) if pages else 0
+    # PDF 才有可靠页码，页均字数过低才判定为扫描件；Word 段落少不等于无文本
+    needs_ocr = (not pages) or total_chars < 20 or (kind == "pdf" and coverage < MIN_CHARS_PER_PAGE)
+
+    if needs_ocr:
+        if not ocr_enabled():
+            if parse_error is not None:
+                raise parse_error
+            raise FileError("文件里几乎没有可读文字（可能是扫描件），管理员尚未开启 OCR")
+        try:
+            pages = ocr_document(data, filename)
+            engine = "ocr"
+            ocr_used = True
+            total_chars = sum(len(text) for _, text in pages)
+        except FileError:
+            # OCR 也失败时，保留本地能读出的那部分（如果有），而不是整份丢弃
+            if parse_error is not None or not pages:
+                raise
 
     if total_chars < 20:
-        raise FileError("文件里几乎没有可读文字（可能是扫描件，OCR 未开启）")
+        raise FileError("文件里几乎没有可读文字（OCR 识别结果也为空），请确认文件是否损坏")
 
     title = Path(filename or "未命名").name[:80]
     chunks = build_chunks(pages, title)
